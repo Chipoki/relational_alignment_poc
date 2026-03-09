@@ -19,6 +19,8 @@ import logging
 import sys
 from pathlib import Path
 
+import numpy as np
+
 # ── Ensure project root is on sys.path ────────────────────────────────────
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(PROJECT_ROOT))
@@ -113,7 +115,7 @@ class POCPipeline:
 
         logger.info("Loaded %d / %d subjects successfully", len(self._subjects), len(ids))
 
-    # ── Phase 1 – Embedding extraction ──────────────────────────────────────
+    # ── Phase 1 – Embedding Extraction ──────────────────────────────────────
 
     def phase1_extract_embeddings(
         self,
@@ -159,8 +161,8 @@ class POCPipeline:
 
     def phase2_build_rdms(self) -> None:
         """
-        Phase 2: Construct 96×96 RDMs for each subject × state × ROI,
-        and for FCNN clear/chance states.
+        Phase 2: Construct aligned RDMs for each subject × state × ROI,
+        and for FCNN clear/chance states by averaging trials per unique stimulus.
         """
         logger.info("=" * 60)
         logger.info("PHASE 2 – Dual-State Intra-Modality RDM Construction")
@@ -169,60 +171,127 @@ class POCPipeline:
         rdm_dir = Path(self._cfg.rdm_dir)
         ensure_dir(rdm_dir)
 
+        # 1. Find common unique stimuli across ALL subjects for each state
+        common_stims_by_state = {}
+        for state in ("conscious", "unconscious"):
+            name_sets = []
+            for subj in self._subjects:
+                vis = getattr(subj, state, None)
+                if vis is not None:
+                    name_sets.append(set(vis.stimulus_names))
+            if name_sets:
+                # Intersect to guarantee identical items for inter-subject RSA
+                common_stims_by_state[state] = list(set.intersection(*name_sets))
+            else:
+                common_stims_by_state[state] = []
+
+        ref_subj = self._subjects[0] if self._subjects else None
+
         # Human RDMs
         for subj in self._subjects:
             self._human_rdms[subj.subject_id] = {}
             for state in ("conscious", "unconscious"):
                 vis_data = getattr(subj, state, None)
-                if vis_data is None:
-                    logger.warning("Subject %s: no '%s' data – skipping RDMs", subj.subject_id, state)
+                common_stims = common_stims_by_state.get(state, [])
+
+                if vis_data is None or not common_stims:
+                    logger.warning("Subject %s: no valid '%s' data or common stimuli – skipping RDMs", subj.subject_id, state)
                     continue
 
-                embeddings = self._fmri_embedder.get_roi_embeddings(vis_data, sort_by_category=True)
-                labels = self._fmri_embedder.get_sorted_labels(vis_data)
-                stim_names = self._fmri_embedder.get_sorted_stimulus_names(vis_data)
+                # Build a mapping of stimulus name to category label for this subject
+                stim_to_label = {s: l for s, l in zip(vis_data.stimulus_names, vis_data.labels)}
+
+                # Sort stimuli to keep bipartite heatmap logic: Living (1) first, then alphabetical
+                sorted_stims = sorted(common_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
+
+                aligned_labels = np.array([stim_to_label[s] for s in sorted_stims])
+                aligned_stim_names = np.array(sorted_stims)
+
+                # Average trial repetitions per unique stimulus
+                roi_averaged = {roi: [] for roi in vis_data.bold_patterns.keys()}
+                for stim in sorted_stims:
+                    idx = np.where(vis_data.stimulus_names == stim)[0]
+                    for roi, patterns in vis_data.bold_patterns.items():
+                        roi_averaged[roi].append(patterns[idx].mean(axis=0))
+
+                # Convert back to arrays
+                for roi in roi_averaged:
+                    roi_averaged[roi] = np.array(roi_averaged[roi])
 
                 state_rdms = self._rdm_builder.build_from_embeddings(
-                    embeddings=embeddings,
-                    stimulus_names=stim_names,
-                    labels=labels,
+                    embeddings=roi_averaged,
+                    stimulus_names=aligned_stim_names,
+                    labels=aligned_labels,
                     subject_id=subj.subject_id,
                     state=state,
                 )
                 self._human_rdms[subj.subject_id][state] = state_rdms
                 logger.info(
-                    "Built %d RDMs for subject %s, state=%s",
-                    len(state_rdms), subj.subject_id, state,
+                    "Built %d RDMs for subject %s, state=%s (n_stimuli=%d)",
+                    len(state_rdms), subj.subject_id, state, len(sorted_stims)
                 )
 
-        # FCNN RDMs (if embeddings are available)
+        # FCNN RDMs
         for noise_state, store_key in [("clear", "fcnn_clear"), ("chance", "fcnn_chance")]:
             if not self._embedding_store.exists(store_key):
                 logger.info("FCNN embeddings not found for '%s' – skipping FCNN RDMs.", noise_state)
                 continue
-            fcnn_emb = self._embedding_store.load(store_key)   # (n_stimuli, n_units)
-            # Use first subject's label ordering as reference
-            ref_subj = self._subjects[0] if self._subjects else None
-            if ref_subj is None:
-                continue
-            ref_vis = ref_subj.conscious or ref_subj.unconscious
-            if ref_vis is None:
+
+            fcnn_emb = self._embedding_store.load(store_key)   # (n_images, n_units)
+
+            if ref_subj is None or ref_subj.conscious is None:
                 continue
 
-            stim_names = self._fmri_embedder.get_sorted_stimulus_names(ref_vis)
-            labels = self._fmri_embedder.get_sorted_labels(ref_vis)
-            # Trim/pad FCNN embeddings to match number of stimuli
-            n = min(len(stim_names), fcnn_emb.shape[0])
+            # We use conscious state common stimuli to align the FCNN outputs
+            ref_stims = common_stims_by_state.get("conscious", [])
+            if not ref_stims:
+                continue
+
+            stim_to_label = {s: l for s, l in zip(ref_subj.conscious.stimulus_names, ref_subj.conscious.labels)}
+            sorted_ref_stims = sorted(ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
+
+            # FCNN embeddings are ordered by alphabetical image paths in Phase 1
+            # We recreate that alphabetical index map to pull the correct rows
+            all_stims_alphabetical = sorted(list(set(ref_subj.conscious.stimulus_names)))
+            stim_to_fcnn_idx = {s: i for i, s in enumerate(all_stims_alphabetical)}
+
+            aligned_fcnn_emb = []
+            valid_labels = []
+            valid_stims = []
+
+            for stim in sorted_ref_stims:
+                if stim in stim_to_fcnn_idx and stim_to_fcnn_idx[stim] < fcnn_emb.shape[0]:
+                    aligned_fcnn_emb.append(fcnn_emb[stim_to_fcnn_idx[stim]])
+                    valid_labels.append(stim_to_label[stim])
+                    valid_stims.append(stim)
+
+            if not aligned_fcnn_emb:
+                continue
+
             fcnn_rdm = self._rdm_builder.build_vectorised(
-                patterns=fcnn_emb[:n],
-                stimulus_names=stim_names[:n],
-                labels=labels[:n],
+                patterns=np.array(aligned_fcnn_emb),
+                stimulus_names=np.array(valid_stims),
+                labels=np.array(valid_labels),
                 roi_or_layer="fcnn_hidden",
                 subject_id=f"fcnn_{noise_state}",
                 state=noise_state,
             )
             self._fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
-            logger.info("Built FCNN RDM for noise_state=%s", noise_state)
+            logger.info("Built FCNN RDM for noise_state=%s (n_stimuli=%d)", noise_state, len(valid_stims))
+
+        # --- Phase 2 Visualization: Dual-state RDMs per subject ---
+        example_roi = "fusiform" if "fusiform" in self._cfg.roi_names else "wholebrain"
+        for subj in self._subjects[:2]:   # first two subjects as examples
+            sid = subj.subject_id
+            c_rdm = self._human_rdms.get(sid, {}).get("conscious", {}).get(example_roi)
+            u_rdm = self._human_rdms.get(sid, {}).get("unconscious", {}).get(example_roi)
+            if c_rdm and u_rdm:
+                self._rdm_plotter.plot_dual_state(
+                    c_rdm, u_rdm,
+                    suptitle=f"Subject {sid} | {example_roi}",
+                    save_name=f"rdm_dual_{sid}_{example_roi}.png",
+                )
+                logger.info("Saved dual-state RDM plot for %s / %s", sid, example_roi)
 
         logger.info("Phase 2 complete.\n")
 
@@ -294,6 +363,31 @@ class POCPipeline:
                 )
 
         save_json(summary, Path(self._cfg.stats_dir) / "phase3_inter_subject_rsa.json")
+
+        # --- Phase 3 Visualization: Summary RSA bar chart ---
+        c_results: list = []
+        u_results: list = []
+        # Reconstruct flat RSAResult-like objects for plotting
+        for roi, metrics in summary.get("conscious", {}).items():
+            c_results.append(RSAResult(
+                subject_a="avg", subject_b="avg", roi_or_layer=roi,
+                state_a="conscious", state_b="conscious",
+                rho=metrics["mean_rho"], p_value=0.0, significant=True,
+            ))
+        for roi, metrics in summary.get("unconscious", {}).items():
+            u_results.append(RSAResult(
+                subject_a="avg", subject_b="avg", roi_or_layer=roi,
+                state_a="unconscious", state_b="unconscious",
+                rho=metrics["mean_rho"], p_value=0.0, significant=True,
+            ))
+        if c_results or u_results:
+            self._summary_plotter.plot_rsa_by_roi(
+                c_results, u_results,
+                roi_names=self._cfg.roi_names,
+                save_name="phase3_rsa_by_roi.png",
+            )
+            logger.info("Saved inter-subject RSA bar chart.")
+
         logger.info("Phase 3 complete.\n")
         return summary
 
@@ -419,75 +513,31 @@ class POCPipeline:
             )
 
         save_json(summary, Path(self._cfg.stats_dir) / "phase5_structural_invariance.json")
+
+        # --- Phase 5 Visualization: Structural invariance scatter ---
+        if summary:
+            self._summary_plotter.plot_structural_invariance(
+                summary, self._cfg.roi_names,
+                save_name="phase5_structural_invariance.png",
+            )
+            logger.info("Saved structural invariance scatter.")
+
         logger.info("Phase 5 complete.\n")
         return summary
 
     # ── Phase 6 – Visualisations ────────────────────────────────────────────
 
-    def phase6_visualize(
-        self,
-        phase3_summary: dict | None = None,
-        phase5_summary: dict | None = None,
-    ) -> None:
+    def phase6_visualize(self) -> None:
         """
-        Phase 6: Generate all relational visualisations.
+        Phase 6: Relational Visualizations (Meta-MDS).
         """
         logger.info("=" * 60)
-        logger.info("PHASE 6 – Relational Visualizations")
+        logger.info("PHASE 6 – Relational Visualizations (Meta-MDS)")
         logger.info("=" * 60)
 
-        out = Path(self._cfg.visualization_dir)
+        example_roi = "fusiform" if "fusiform" in self._cfg.roi_names else "wholebrain"
 
-        # 6a – Dual-state RDMs per subject (first subject, fusiform as example)
-        example_roi = "fusiform"
-        for subj in self._subjects[:2]:   # first two subjects as examples
-            sid = subj.subject_id
-            c_rdm = self._human_rdms.get(sid, {}).get("conscious", {}).get(example_roi)
-            u_rdm = self._human_rdms.get(sid, {}).get("unconscious", {}).get(example_roi)
-            if c_rdm and u_rdm:
-                self._rdm_plotter.plot_dual_state(
-                    c_rdm, u_rdm,
-                    suptitle=f"Subject {sid} | {example_roi}",
-                    save_name=f"rdm_dual_{sid}_{example_roi}.png",
-                )
-                logger.info("Saved dual-state RDM plot for %s / %s", sid, example_roi)
-
-        # 6b – Summary RSA bar chart
-        if phase3_summary:
-            c_results: list = []
-            u_results: list = []
-            # Reconstruct flat RSAResult-like objects for plotting
-            for roi, metrics in phase3_summary.get("conscious", {}).items():
-                from analysis.rsa.rsa_analyzer import RSAResult
-                c_results.append(RSAResult(
-                    subject_a="avg", subject_b="avg", roi_or_layer=roi,
-                    state_a="conscious", state_b="conscious",
-                    rho=metrics["mean_rho"], p_value=0.0, significant=True,
-                ))
-            for roi, metrics in phase3_summary.get("unconscious", {}).items():
-                from analysis.rsa.rsa_analyzer import RSAResult
-                u_results.append(RSAResult(
-                    subject_a="avg", subject_b="avg", roi_or_layer=roi,
-                    state_a="unconscious", state_b="unconscious",
-                    rho=metrics["mean_rho"], p_value=0.0, significant=True,
-                ))
-            if c_results or u_results:
-                self._summary_plotter.plot_rsa_by_roi(
-                    c_results, u_results,
-                    roi_names=self._cfg.roi_names,
-                    save_name="phase3_rsa_by_roi.png",
-                )
-                logger.info("Saved inter-subject RSA bar chart.")
-
-        # 6c – Structural invariance scatter
-        if phase5_summary:
-            self._summary_plotter.plot_structural_invariance(
-                phase5_summary, self._cfg.roi_names,
-                save_name="phase5_structural_invariance.png",
-            )
-            logger.info("Saved structural invariance scatter.")
-
-        # 6d – Meta-MDS for a key ROI
+        # Meta-MDS for key ROIs
         for roi in [example_roi, "lateral_occipital"]:
             all_rdms: list[RDM] = []
             ids: list[str] = []
@@ -527,10 +577,10 @@ class POCPipeline:
         self.load_subjects(subject_ids)
         self.phase1_extract_embeddings(stimulus_image_dir)
         self.phase2_build_rdms()
-        p3 = self.phase3_inter_subject_rsa()
+        self.phase3_inter_subject_rsa()
         self.phase4_cross_modality_alignment()
-        p5 = self.phase5_structural_invariance()
-        self.phase6_visualize(phase3_summary=p3, phase5_summary=p5)
+        self.phase5_structural_invariance()
+        self.phase6_visualize()
         logger.info("Pipeline complete. Results saved to: %s", self._cfg.results_dir)
 
 
@@ -552,7 +602,7 @@ def _parse_args() -> argparse.Namespace:
         help="Subject IDs to process (default: all in data.root)",
     )
     parser.add_argument(
-        "--stimulus-dir", default="./../soto_data/unconfeats/data/experiment_images_greyscaled",
+        "--stimulus-dir", default=None,
         help="Directory containing stimulus PNG/JPG images for FCNN embedding",
     )
     parser.add_argument(
