@@ -159,9 +159,9 @@ python scripts/run_pipeline.py --help
 
 ```python
 from config.settings import Settings
-from scripts.run_pipeline import POCPipeline
+from run_pipeline import POCPipeline
 
-cfg      = Settings("config/config.yaml")
+cfg = Settings("config/config.yaml")
 pipeline = POCPipeline(cfg)
 
 # Load subjects and run all phases
@@ -174,9 +174,9 @@ pipeline.phase5_structural_invariance()
 pipeline.phase6_visualize()
 
 # Access artefacts
-print(pipeline.rdms)          # dict: subject_id → state → roi → RDM
-print(pipeline.rsa_results)   # dict: roi → RSAResult
-print(pipeline.gw_results)    # dict: roi → GWResult
+print(pipeline.rdms)  # dict: subject_id → state → roi → RDM
+print(pipeline.rsa_results)  # dict: roi → RSAResult
+print(pipeline.gw_results)  # dict: roi → GWResult
 ```
 
 ---

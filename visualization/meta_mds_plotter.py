@@ -18,7 +18,7 @@ class MetaMDSPlotter:
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._out_dir = Path(settings.visualization["output_dir"])
+        self._out_dir = Path(settings.visualization_dir)
         self._dpi = settings.visualization.get("dpi", 150)
         self._n_components = settings.visualization.get("meta_mds_n_components", 2)
 

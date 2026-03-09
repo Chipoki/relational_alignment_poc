@@ -5,7 +5,7 @@
 
 # ── Data paths ────────────────────────────────────────────────
 data:
-  root: "data/raw"            # Root folder containing per-subject sub-folders
+  root: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/soto_data/ds003927/derivatives/"            # Root folder containing per-subject sub-folders
   # ── Actual per-subject layout (ds003927 derivatives) ──────────────
   # Each subject folder contains flat files at its root:
   #   wholebrain_conscious.nii.gz   – 4D BOLD for conscious trials
@@ -85,13 +85,16 @@ gromov_wasserstein:
 
 # ── Visualization ─────────────────────────────────────────────
 visualization:
-  output_dir: "results/figures"
+  output_dir: "figures"           # Relative to output parent_dir
   dpi: 150
   meta_mds_n_components: 2
 
 # ── Output ────────────────────────────────────────────────────
 output:
-  results_dir: "results"
-  rdm_dir: "results/rdms"
-  embedding_dir: "results/embeddings"
-  stats_dir: "results/stats"
+  parent_dir: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/poc_output"           # Parent directory for all outputs
+  # Subdirectories will be created relative to parent_dir
+  # (Optional: override individual subdirectories if needed)
+  # results_dir: "results"
+  # rdm_dir: "results/rdms"
+  # embedding_dir: "results/embeddings"
+  # stats_dir: "results/stats"

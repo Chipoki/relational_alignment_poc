@@ -14,7 +14,7 @@ class TransportPlotter:
     """Plots the optimal transport plan as a bipartite matching heatmap."""
 
     def __init__(self, settings: Settings) -> None:
-        self._out_dir = Path(settings.visualization["output_dir"])
+        self._out_dir = Path(settings.visualization_dir)
         self._dpi = settings.visualization.get("dpi", 150)
 
     def plot(

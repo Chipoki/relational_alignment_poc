@@ -64,7 +64,7 @@ class POCPipeline:
         self._subject_builder = SubjectBuilder(settings)
         self._fcnn_embedder = FCNNEmbedder(settings)
         self._fmri_embedder = FMRIEmbedder(settings)
-        self._embedding_store = EmbeddingStore(settings.output["embedding_dir"])
+        self._embedding_store = EmbeddingStore(settings.embedding_dir)
         self._rdm_builder = RDMBuilder()
         self._rsa_analyzer = RSAAnalyzer(settings)
         self._noise_ceiling = NoiseCeiling()
@@ -166,7 +166,7 @@ class POCPipeline:
         logger.info("PHASE 2 – Dual-State Intra-Modality RDM Construction")
         logger.info("=" * 60)
 
-        rdm_dir = Path(self._cfg.output["rdm_dir"])
+        rdm_dir = Path(self._cfg.rdm_dir)
         ensure_dir(rdm_dir)
 
         # Human RDMs
@@ -293,7 +293,7 @@ class POCPipeline:
                     roi, gw_matrix.matrix[gw_matrix.matrix > 0].mean(),
                 )
 
-        save_json(summary, Path(self._cfg.output["stats_dir"]) / "phase3_inter_subject_rsa.json")
+        save_json(summary, Path(self._cfg.stats_dir) / "phase3_inter_subject_rsa.json")
         logger.info("Phase 3 complete.\n")
         return summary
 
@@ -365,7 +365,7 @@ class POCPipeline:
                     label, roi, mean_rho, mean_top_k,
                 )
 
-        save_json(summary, Path(self._cfg.output["stats_dir"]) / "phase4_cross_modality.json")
+        save_json(summary, Path(self._cfg.stats_dir) / "phase4_cross_modality.json")
         logger.info("Phase 4 complete.\n")
         return summary
 
@@ -418,7 +418,7 @@ class POCPipeline:
                 metrics["bioplausibility_check"],
             )
 
-        save_json(summary, Path(self._cfg.output["stats_dir"]) / "phase5_structural_invariance.json")
+        save_json(summary, Path(self._cfg.stats_dir) / "phase5_structural_invariance.json")
         logger.info("Phase 5 complete.\n")
         return summary
 
@@ -436,7 +436,7 @@ class POCPipeline:
         logger.info("PHASE 6 – Relational Visualizations")
         logger.info("=" * 60)
 
-        out = Path(self._cfg.visualization["output_dir"])
+        out = Path(self._cfg.visualization_dir)
 
         # 6a – Dual-state RDMs per subject (first subject, fusiform as example)
         example_roi = "fusiform"
@@ -531,7 +531,7 @@ class POCPipeline:
         self.phase4_cross_modality_alignment()
         p5 = self.phase5_structural_invariance()
         self.phase6_visualize(phase3_summary=p3, phase5_summary=p5)
-        logger.info("Pipeline complete. Results saved to: %s", self._cfg.output["results_dir"])
+        logger.info("Pipeline complete. Results saved to: %s", self._cfg.results_dir)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -569,8 +569,9 @@ def _parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = _parse_args()
-    setup_logging(level=args.log_level, log_file="results/pipeline.log")
     settings = Settings(args.config)
+    log_file = Path(settings.log_dir) / "pipeline.log"
+    setup_logging(level=args.log_level, log_file=str(log_file))
     pipeline = POCPipeline(settings)
 
     if args.phase is None:
