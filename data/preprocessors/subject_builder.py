@@ -112,12 +112,19 @@ class SubjectBuilder:
             patterns = self._fmri.zscore_patterns(patterns)  # (n_trials, n_voxels)
 
             # Extract per-ROI patterns from whole-brain patterns.
-            # ROI masks are looked up inside subject_root (flat layout has no rois/ subdir)
-            # or a sibling rois/ directory; ROIExtractor handles both gracefully.
             roi_dir = self._resolve_roi_dir(subject_root)
             roi_patterns = self._roi_extractor.extract_all_rois(
                 patterns, full_mask, roi_dir
             )
+
+            # --- IMPLEMENT WHOLE-BRAIN FALLBACK ---
+            if not roi_patterns:
+                logger.warning("[%s] No ROIs extracted. Defaulting to whole-brain pattern.", subject_id)
+                roi_patterns["wholebrain"] = patterns
+                # Dynamically register 'wholebrain' as a valid ROI for downstream phases
+                if "wholebrain" not in self._settings._raw["rois"]:
+                    self._settings._raw["rois"].append("wholebrain")
+            # --------------------------------------
 
             # Build labels and stimulus names from behavioural CSV
             labels = self._behavioral.extract_binary_labels(events_df)
@@ -191,7 +198,4 @@ class SubjectBuilder:
         rois_subdir = subject_root / "rois"
         if rois_subdir.exists():
             return rois_subdir
-        # In the flat ds003927 layout there are no individual ROI masks;
-        # ROI extraction will be skipped gracefully by ROIExtractor (warns per ROI).
-        # Return subject_root so the extractor at least attempts a search there.
         return subject_root
