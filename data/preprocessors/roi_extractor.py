@@ -45,6 +45,13 @@ class ROIExtractor:
         results: dict[str, np.ndarray] = {}
 
         for roi_name in self._roi_names:
+            # "wholebrain" is a reserved fallback name handled by SubjectBuilder;
+            # it is never a real mask file and must be skipped here to prevent
+            # the glob from matching the 4-D BOLD NIfTI (e.g. wholebrain_conscious.nii.gz)
+            # and loading it as a mask, which causes a shape-broadcast crash.
+            if roi_name == "wholebrain":
+                continue
+
             roi_mask_path = self._find_roi_mask(roi_mask_dir, roi_name)
             if roi_mask_path is None:
                 logger.warning("ROI mask not found for '%s' in %s – skipping", roi_name, roi_mask_dir)

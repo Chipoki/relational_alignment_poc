@@ -157,14 +157,13 @@ class FCNNEmbedder:
         sigma2 = float(self._noise_levels.get(noise_state, 0))
         sigma = np.sqrt(sigma2)
 
-        noise_transform = self._build_noise_transform(sigma)
         dataset = _ImageDataset(image_paths, self._transform)
         loader = DataLoader(dataset, batch_size=self._batch_size, shuffle=False)
 
         all_hidden: list[np.ndarray] = []
 
         for _session in range(self._n_sessions):
-            session_hidden = self._run_inference(loader, noise_transform, sigma)
+            session_hidden = self._run_inference(loader, sigma)
             all_hidden.append(session_hidden)
 
         # Average across sessions (mimicking the 20-session protocol in paper)
@@ -187,8 +186,6 @@ class FCNNEmbedder:
         Convolutional backbone remains frozen.
         """
         self._model.train()
-        trainable = [p for p in self._model.parameters() if p.requires_grad]
-        # Also unfreeze hidden and classifier
         for p in list(self._model.hidden.parameters()) + list(self._model.classifier.parameters()):
             p.requires_grad = True
         optimizer = torch.optim.Adam(
@@ -222,25 +219,16 @@ class FCNNEmbedder:
     def _run_inference(
         self,
         loader: DataLoader,
-        noise_transform,
         sigma: float,
     ) -> np.ndarray:
+        """Run one inference pass over all images, optionally with Gaussian noise."""
         all_hidden = []
         with torch.no_grad():
             for imgs, _ in loader:
+                imgs = imgs.to(self._device)
                 if sigma > 0:
                     noise = torch.randn_like(imgs) * (sigma / 255.0)
                     imgs = (imgs + noise).clamp(0, 1)
-                imgs = imgs.to(self._device)
                 hidden, _ = self._model(imgs)
                 all_hidden.append(hidden.cpu().numpy())
         return np.concatenate(all_hidden, axis=0)
-
-    @staticmethod
-    def _build_noise_transform(sigma: float):
-        """Returns a callable that adds Gaussian noise to a tensor."""
-        def _add_noise(tensor: torch.Tensor) -> torch.Tensor:
-            if sigma > 0:
-                return (tensor + torch.randn_like(tensor) * (sigma / 255.0)).clamp(0, 1)
-            return tensor
-        return _add_noise

@@ -670,7 +670,7 @@ def _parse_args() -> argparse.Namespace:
         help="Subject IDs to process (default: all in data.root)",
     )
     parser.add_argument(
-        "--stimulus-dir", default=None,
+        "--stimulus-dir", default="./../soto_data/unconfeats/data/experiment_images_greyscaled",
         help="Directory containing stimulus PNG/JPG images for FCNN embedding",
     )
     parser.add_argument(
