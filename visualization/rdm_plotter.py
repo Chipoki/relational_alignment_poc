@@ -29,14 +29,20 @@ class RDMPlotter:
     ) -> plt.Figure:
         """Plot a single RDM heatmap sorted by category."""
         sort_idx = np.argsort(1 - rdm.labels)  # Living first
-        mat = rdm.matrix[np.ix_(sort_idx, sort_idx)]
+        mat = np.copy(rdm.matrix[np.ix_(sort_idx, sort_idx)])
+
+        # FIX: Mask the diagonal with NaNs so it doesn't skew the colormap scaling
+        np.fill_diagonal(mat, np.nan)
+
         sorted_labels = rdm.labels[sort_idx]
 
         n_living = sorted_labels.sum()
         n_total = len(sorted_labels)
 
         fig, ax = plt.subplots(figsize=(6, 5))
-        im = ax.imshow(mat, cmap="RdYlBu_r", vmin=0, vmax=1.0, aspect="auto")
+
+        # FIX: Removed hardcoded vmin/vmax to allow auto-scaling to the subtle variance
+        im = ax.imshow(mat, cmap="RdYlBu_r", aspect="auto")
         plt.colorbar(im, ax=ax, label="Dissimilarity (1 − Spearman ρ)")
 
         # Draw category boundary
@@ -79,9 +85,16 @@ class RDMPlotter:
             axes, [rdm_conscious, rdm_unconscious], ["Conscious", "Unconscious"]
         ):
             sort_idx = np.argsort(1 - rdm.labels)
-            mat = rdm.matrix[np.ix_(sort_idx, sort_idx)]
+            mat = np.copy(rdm.matrix[np.ix_(sort_idx, sort_idx)])
+
+            # FIX: Mask the diagonal with NaNs
+            np.fill_diagonal(mat, np.nan)
+
             n_living = rdm.labels.sum()
-            im = ax.imshow(mat, cmap="RdYlBu_r", vmin=0, vmax=1.0, aspect="auto")
+
+            # FIX: Removed hardcoded vmin/vmax
+            im = ax.imshow(mat, cmap="RdYlBu_r", aspect="auto")
+
             ax.axhline(n_living - 0.5, color="black", lw=1.5)
             ax.axvline(n_living - 0.5, color="black", lw=1.5)
             ax.set_title(f"{label}\n{rdm.roi_or_layer}", fontsize=9)

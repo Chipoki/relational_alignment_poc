@@ -17,6 +17,7 @@ from __future__ import annotations
 import argparse
 import logging
 import sys
+import re
 from pathlib import Path
 
 import numpy as np
@@ -44,6 +45,14 @@ from utils.logging_utils import setup_logging
 from utils.io_utils import save_json, ensure_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _normalize_name(s: str) -> str:
+    """
+    Strip extensions, punctuation, and whitespace for robust matching
+    between behavioural CSV labels and raw image filenames.
+    """
+    return re.sub(r'[^a-z0-9]', '', Path(str(s)).stem.lower())
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -115,7 +124,7 @@ class POCPipeline:
 
         logger.info("Loaded %d / %d subjects successfully", len(self._subjects), len(ids))
 
-    # ── Phase 1 – Embedding Extraction ──────────────────────────────────────
+    # ── Phase 1 – Embedding extraction ──────────────────────────────────────
 
     def phase1_extract_embeddings(
         self,
@@ -123,7 +132,6 @@ class POCPipeline:
     ) -> None:
         """
         Phase 1: Extract FCNN hidden-layer embeddings for clear and noisy images.
-        fMRI embeddings are already in Subject.conscious/unconscious.bold_patterns.
         """
         logger.info("=" * 60)
         logger.info("PHASE 1 – Dual-State Embedding Extraction")
@@ -138,21 +146,31 @@ class POCPipeline:
             return
 
         img_dir = Path(stimulus_image_dir)
-        image_paths = sorted(img_dir.glob("*.jpg")) + sorted(img_dir.glob("*.png"))
+
+        # Use rglob for recursive directory searching (finds images in nested class folders)
+        image_paths = sorted(img_dir.rglob("*.jpg")) + sorted(img_dir.rglob("*.png"))
         if not image_paths:
-            logger.warning("No images found in %s – FCNN phase skipped.", img_dir)
+            logger.warning("No images found in %s (or its subdirectories) – FCNN phase skipped.", img_dir)
             return
 
         logger.info("Found %d stimulus images in %s", len(image_paths), img_dir)
 
         for noise_state in ("clear", "chance"):
             store_key = f"fcnn_{noise_state}"
-            if self._embedding_store.exists(store_key):
+            names_key = f"fcnn_{noise_state}_names"
+
+            # If we already have the embeddings and their associated names, skip extraction
+            if self._embedding_store.exists(store_key) and self._embedding_store.exists(names_key):
                 logger.info("Cached FCNN embeddings found for '%s' – skipping extraction.", noise_state)
             else:
                 logger.info("Extracting FCNN embeddings (noise_state=%s)...", noise_state)
                 embeddings = self._fcnn_embedder.extract_embeddings(image_paths, noise_state=noise_state)
+
+                # Save the image stems (filenames without extension) for perfect alignment in Phase 2
+                image_names = np.array([p.stem for p in image_paths])
+
                 self._embedding_store.save(store_key, embeddings)
+                self._embedding_store.save(names_key, image_names)
                 logger.info("Saved FCNN embeddings (%s) → shape %s", noise_state, embeddings.shape)
 
         logger.info("Phase 1 complete.\n")
@@ -187,7 +205,9 @@ class POCPipeline:
 
         ref_subj = self._subjects[0] if self._subjects else None
 
+        # ---------------------------------------------------------
         # Human RDMs
+        # ---------------------------------------------------------
         for subj in self._subjects:
             self._human_rdms[subj.subject_id] = {}
             for state in ("conscious", "unconscious"):
@@ -214,9 +234,22 @@ class POCPipeline:
                     for roi, patterns in vis_data.bold_patterns.items():
                         roi_averaged[roi].append(patterns[idx].mean(axis=0))
 
-                # Convert back to arrays
+                # --- FIX: Sanitize fMRI patterns (Remove NaNs & Zero-Variance Voxels) ---
                 for roi in roi_averaged:
-                    roi_averaged[roi] = np.array(roi_averaged[roi])
+                    arr = np.array(roi_averaged[roi])
+
+                    # Clean Z-score division by zero
+                    arr = np.nan_to_num(arr, nan=0.0)
+
+                    # Drop voxels with absolutely zero variance to prevent NaN correlations
+                    variances = np.var(arr, axis=0)
+                    valid_mask = variances > 1e-8
+
+                    if valid_mask.sum() > 0:
+                        arr = arr[:, valid_mask]
+
+                    roi_averaged[roi] = arr
+                # -------------------------------------------------------------------------
 
                 state_rdms = self._rdm_builder.build_from_embeddings(
                     embeddings=roi_averaged,
@@ -231,13 +264,17 @@ class POCPipeline:
                     len(state_rdms), subj.subject_id, state, len(sorted_stims)
                 )
 
+        # ---------------------------------------------------------
         # FCNN RDMs
+        # ---------------------------------------------------------
         for noise_state, store_key in [("clear", "fcnn_clear"), ("chance", "fcnn_chance")]:
-            if not self._embedding_store.exists(store_key):
+            names_key = f"{store_key}_names"
+            if not self._embedding_store.exists(store_key) or not self._embedding_store.exists(names_key):
                 logger.info("FCNN embeddings not found for '%s' – skipping FCNN RDMs.", noise_state)
                 continue
 
             fcnn_emb = self._embedding_store.load(store_key)   # (n_images, n_units)
+            fcnn_names = self._embedding_store.load(names_key) # (n_images,) string array
 
             if ref_subj is None or ref_subj.conscious is None:
                 continue
@@ -250,22 +287,25 @@ class POCPipeline:
             stim_to_label = {s: l for s, l in zip(ref_subj.conscious.stimulus_names, ref_subj.conscious.labels)}
             sorted_ref_stims = sorted(ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
 
-            # FCNN embeddings are ordered by alphabetical image paths in Phase 1
-            # We recreate that alphabetical index map to pull the correct rows
-            all_stims_alphabetical = sorted(list(set(ref_subj.conscious.stimulus_names)))
-            stim_to_fcnn_idx = {s: i for i, s in enumerate(all_stims_alphabetical)}
+            # --- FIX: Robust String Matching ---
+            # Map FCNN image stem to its row index in the embedding matrix using normalized strings
+            stim_to_fcnn_idx = {_normalize_name(name): i for i, name in enumerate(fcnn_names)}
 
             aligned_fcnn_emb = []
             valid_labels = []
             valid_stims = []
 
             for stim in sorted_ref_stims:
-                if stim in stim_to_fcnn_idx and stim_to_fcnn_idx[stim] < fcnn_emb.shape[0]:
-                    aligned_fcnn_emb.append(fcnn_emb[stim_to_fcnn_idx[stim]])
+                norm_stim = _normalize_name(stim)
+                if norm_stim in stim_to_fcnn_idx:
+                    idx = stim_to_fcnn_idx[norm_stim]
+                    aligned_fcnn_emb.append(fcnn_emb[idx])
                     valid_labels.append(stim_to_label[stim])
                     valid_stims.append(stim)
+            # -----------------------------------
 
             if not aligned_fcnn_emb:
+                logger.warning("Failed to align FCNN stimuli with human stimuli for %s. Check naming conventions.", noise_state)
                 continue
 
             fcnn_rdm = self._rdm_builder.build_vectorised(
@@ -279,12 +319,22 @@ class POCPipeline:
             self._fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
             logger.info("Built FCNN RDM for noise_state=%s (n_stimuli=%d)", noise_state, len(valid_stims))
 
-        # --- Phase 2 Visualization: Dual-state RDMs per subject ---
-        example_roi = "fusiform" if "fusiform" in self._cfg.roi_names else "wholebrain"
+        # ---------------------------------------------------------
+        # Phase 2 Visualization: Dual-state RDMs per subject
+        # ---------------------------------------------------------
         for subj in self._subjects[:2]:   # first two subjects as examples
             sid = subj.subject_id
+            c_rois = list(self._human_rdms.get(sid, {}).get("conscious", {}).keys())
+
+            if not c_rois:
+                continue
+
+            # Prefer fusiform if it exists, otherwise use the first one available
+            example_roi = "fusiform" if "fusiform" in c_rois else c_rois[0]
+
             c_rdm = self._human_rdms.get(sid, {}).get("conscious", {}).get(example_roi)
             u_rdm = self._human_rdms.get(sid, {}).get("unconscious", {}).get(example_roi)
+
             if c_rdm and u_rdm:
                 self._rdm_plotter.plot_dual_state(
                     c_rdm, u_rdm,
@@ -308,6 +358,7 @@ class POCPipeline:
 
         summary: dict = {}
 
+        # Supervised RSA and Noise Ceiling
         for state in ("conscious", "unconscious"):
             logger.info("Computing inter-subject RSA for state=%s", state)
             state_summary: dict = {}
@@ -322,11 +373,8 @@ class POCPipeline:
                 if len(roi_rdms) < 2:
                     continue
 
-                # Supervised RSA
                 rsa_results = self._rsa_analyzer.inter_subject_rsa(roi_rdms)
                 mean_rho = self._rsa_analyzer.mean_rho(rsa_results)
-
-                # Noise ceiling
                 nc = self._noise_ceiling.compute(roi_rdms)
 
                 state_summary[roi] = {
@@ -355,6 +403,7 @@ class POCPipeline:
                 ]
                 if len(roi_rdms) < 2:
                     continue
+
                 ids = [f"{sid}_{state}" for sid in self._human_rdms if state in self._human_rdms[sid]]
                 gw_matrix = self._gw_aligner.build_pairwise_distance_matrix(roi_rdms, ids)
                 logger.info(
@@ -364,9 +413,12 @@ class POCPipeline:
 
         save_json(summary, Path(self._cfg.stats_dir) / "phase3_inter_subject_rsa.json")
 
-        # --- Phase 3 Visualization: Summary RSA bar chart ---
+        # ---------------------------------------------------------
+        # Phase 3 Visualization: Summary RSA bar chart
+        # ---------------------------------------------------------
         c_results: list = []
         u_results: list = []
+
         # Reconstruct flat RSAResult-like objects for plotting
         for roi, metrics in summary.get("conscious", {}).items():
             c_results.append(RSAResult(
@@ -380,6 +432,7 @@ class POCPipeline:
                 state_a="unconscious", state_b="unconscious",
                 rho=metrics["mean_rho"], p_value=0.0, significant=True,
             ))
+
         if c_results or u_results:
             self._summary_plotter.plot_rsa_by_roi(
                 c_results, u_results,
@@ -427,6 +480,7 @@ class POCPipeline:
                     if human_state in self._human_rdms[sid]
                     and roi in self._human_rdms[sid][human_state]
                 ]
+
                 if not human_rdms:
                     continue
 
@@ -514,7 +568,9 @@ class POCPipeline:
 
         save_json(summary, Path(self._cfg.stats_dir) / "phase5_structural_invariance.json")
 
-        # --- Phase 5 Visualization: Structural invariance scatter ---
+        # ---------------------------------------------------------
+        # Phase 5 Visualization: Structural invariance scatter
+        # ---------------------------------------------------------
         if summary:
             self._summary_plotter.plot_structural_invariance(
                 summary, self._cfg.roi_names,
@@ -535,27 +591,39 @@ class POCPipeline:
         logger.info("PHASE 6 – Relational Visualizations (Meta-MDS)")
         logger.info("=" * 60)
 
-        example_roi = "fusiform" if "fusiform" in self._cfg.roi_names else "wholebrain"
+        # Dynamic fallback for Meta-MDS ROI mapping
+        sid0 = self._subjects[0].subject_id if self._subjects else None
+        c_rois = list(self._human_rdms.get(sid0, {}).get("conscious", {}).keys()) if sid0 else []
+        example_roi = "fusiform" if "fusiform" in c_rois else (c_rois[0] if c_rois else "wholebrain")
 
         # Meta-MDS for key ROIs
         for roi in [example_roi, "lateral_occipital"]:
+            if roi not in c_rois:
+                continue
+
             all_rdms: list[RDM] = []
             ids: list[str] = []
+
+            # Gather human RDMs
             for sid in self._human_rdms:
                 for state in ("conscious", "unconscious"):
                     rdm = self._human_rdms[sid].get(state, {}).get(roi)
                     if rdm:
                         all_rdms.append(rdm)
                         ids.append(f"{sid}_{state[:3]}")
+
+            # Gather AI RDMs
             for noise_state in ("clear", "chance"):
                 rdm = self._fcnn_rdms.get(noise_state, {}).get("fcnn_hidden")
                 if rdm:
                     all_rdms.append(rdm)
                     ids.append(f"fcnn_{noise_state}")
+
             if len(all_rdms) >= 3:
                 gw_mat = self._gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
                 human_ids = [i for i in ids if not i.startswith("fcnn")]
                 model_ids = [i for i in ids if i.startswith("fcnn")]
+
                 self._meta_mds_plotter.plot(
                     gw_mat, human_ids, model_ids,
                     title=f"Meta-MDS | {roi}",
@@ -613,6 +681,7 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--log-level", default="INFO",
         choices=["DEBUG", "INFO", "WARNING", "ERROR"],
+        help="Set the logging output level",
     )
     return parser.parse_args()
 
@@ -638,7 +707,7 @@ def main() -> None:
             3: pipeline.phase3_inter_subject_rsa,
             4: pipeline.phase4_cross_modality_alignment,
             5: pipeline.phase5_structural_invariance,
-            6: lambda: pipeline.phase6_visualize(),
+            6: pipeline.phase6_visualize,
         }
         dispatch[args.phase]()
 
