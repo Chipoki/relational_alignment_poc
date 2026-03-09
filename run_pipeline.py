@@ -215,14 +215,22 @@ class POCPipeline:
                 common_stims = common_stims_by_state.get(state, [])
 
                 if vis_data is None or not common_stims:
-                    logger.warning("Subject %s: no valid '%s' data or common stimuli – skipping RDMs", subj.subject_id, state)
+                    logger.warning(
+                        "Subject %s: no valid '%s' data or common stimuli – skipping RDMs",
+                        subj.subject_id,
+                        state,
+                    )
                     continue
 
                 # Build a mapping of stimulus name to category label for this subject
-                stim_to_label = {s: l for s, l in zip(vis_data.stimulus_names, vis_data.labels)}
+                stim_to_label = {
+                    s: l for s, l in zip(vis_data.stimulus_names, vis_data.labels)
+                }
 
                 # Sort stimuli to keep bipartite heatmap logic: Living (1) first, then alphabetical
-                sorted_stims = sorted(common_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
+                sorted_stims = sorted(
+                    common_stims, key=lambda x: (-stim_to_label.get(x, 0), x)
+                )
 
                 aligned_labels = np.array([stim_to_label[s] for s in sorted_stims])
                 aligned_stim_names = np.array(sorted_stims)
@@ -261,7 +269,10 @@ class POCPipeline:
                 self._human_rdms[subj.subject_id][state] = state_rdms
                 logger.info(
                     "Built %d RDMs for subject %s, state=%s (n_stimuli=%d)",
-                    len(state_rdms), subj.subject_id, state, len(sorted_stims)
+                    len(state_rdms),
+                    subj.subject_id,
+                    state,
+                    len(sorted_stims),
                 )
 
         # ---------------------------------------------------------
@@ -274,7 +285,7 @@ class POCPipeline:
                 continue
 
             fcnn_emb = self._embedding_store.load(store_key)   # (n_images, n_units)
-            fcnn_names = self._embedding_store.load(names_key) # (n_images,) string array
+            fcnn_names = self._embedding_store.load(names_key)  # (n_images,) string array
 
             if ref_subj is None or ref_subj.conscious is None:
                 continue
@@ -284,8 +295,14 @@ class POCPipeline:
             if not ref_stims:
                 continue
 
-            stim_to_label = {s: l for s, l in zip(ref_subj.conscious.stimulus_names, ref_subj.conscious.labels)}
-            sorted_ref_stims = sorted(ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
+            stim_to_label = {
+                s: l for s, l in zip(
+                    ref_subj.conscious.stimulus_names, ref_subj.conscious.labels
+                )
+            }
+            sorted_ref_stims = sorted(
+                ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x)
+            )
 
             # --- FIX: Robust String Matching ---
             # Map FCNN image stem to its row index in the embedding matrix using normalized strings
@@ -305,7 +322,11 @@ class POCPipeline:
             # -----------------------------------
 
             if not aligned_fcnn_emb:
-                logger.warning("Failed to align FCNN stimuli with human stimuli for %s. Check naming conventions.", noise_state)
+                logger.warning(
+                    "Failed to align FCNN stimuli with human stimuli for %s. "
+                    "Check naming conventions.",
+                    noise_state,
+                )
                 continue
 
             fcnn_rdm = self._rdm_builder.build_vectorised(
@@ -320,9 +341,12 @@ class POCPipeline:
             logger.info("Built FCNN RDM for noise_state=%s (n_stimuli=%d)", noise_state, len(valid_stims))
 
         # ---------------------------------------------------------
-        # Phase 2 Visualization: Dual-state RDMs per subject
+        # Phase 2 Visualization: Dual-state RDMs — ALL subjects
         # ---------------------------------------------------------
-        for subj in self._subjects[:2]:   # first two subjects as examples
+        # FIX: was `for subj in self._subjects[:2]` — a debug slice that was
+        # never removed, causing plots to be saved for sub-01 and sub-02 only.
+        # Changed to iterate over all subjects.
+        for subj in self._subjects:
             sid = subj.subject_id
             c_rois = list(self._human_rdms.get(sid, {}).get("conscious", {}).keys())
 
@@ -336,9 +360,16 @@ class POCPipeline:
             u_rdm = self._human_rdms.get(sid, {}).get("unconscious", {}).get(example_roi)
 
             if c_rdm and u_rdm:
+                # FIX: pass n_stimuli so the plotter can annotate each panel,
+                # and use improved titles / axis labels (handled inside
+                # RDMPlotter.plot_dual_state — see visualization/rdm_plotter.py).
                 self._rdm_plotter.plot_dual_state(
                     c_rdm, u_rdm,
-                    suptitle=f"Subject {sid} | {example_roi}",
+                    suptitle=(
+                        f"Subject {sid}  ·  Representational Dissimilarity Matrix\n"
+                        f"{example_roi.replace('_', ' ').title()}  "
+                        f"(Conscious | Unconscious)"
+                    ),
                     save_name=f"rdm_dual_{sid}_{example_roi}.png",
                 )
                 logger.info("Saved dual-state RDM plot for %s / %s", sid, example_roi)
@@ -404,11 +435,16 @@ class POCPipeline:
                 if len(roi_rdms) < 2:
                     continue
 
-                ids = [f"{sid}_{state}" for sid in self._human_rdms if state in self._human_rdms[sid]]
+                ids = [
+                    f"{sid}_{state}"
+                    for sid in self._human_rdms
+                    if state in self._human_rdms[sid]
+                ]
                 gw_matrix = self._gw_aligner.build_pairwise_distance_matrix(roi_rdms, ids)
                 logger.info(
                     "  ROI %s | GW mean distance=%.4f",
-                    roi, gw_matrix.matrix[gw_matrix.matrix > 0].mean(),
+                    roi,
+                    gw_matrix.matrix[gw_matrix.matrix > 0].mean(),
                 )
 
         save_json(summary, Path(self._cfg.stats_dir) / "phase3_inter_subject_rsa.json")
@@ -463,10 +499,19 @@ class POCPipeline:
 
         for noise_state, human_state, label in alignment_pairs:
             if noise_state not in self._fcnn_rdms:
-                logger.info("FCNN '%s' RDMs not available – skipping %s alignment.", noise_state, label)
+                logger.info(
+                    "FCNN '%s' RDMs not available – skipping %s alignment.",
+                    noise_state,
+                    label,
+                )
                 continue
 
-            logger.info("Running %s alignment (FCNN %s ↔ human %s)...", label, noise_state, human_state)
+            logger.info(
+                "Running %s alignment (FCNN %s ↔ human %s)...",
+                label,
+                noise_state,
+                human_state,
+            )
             summary[label] = {}
 
             for roi in self._cfg.roi_names:
@@ -499,7 +544,10 @@ class POCPipeline:
                     if "fcnn" in res.source_id or "fcnn" in res.target_id
                 ]
                 mean_top_k = (
-                    float(sum(r.top_k_matching_rate for r in fcnn_gw_results) / len(fcnn_gw_results))
+                    float(
+                        sum(r.top_k_matching_rate for r in fcnn_gw_results)
+                        / len(fcnn_gw_results)
+                    )
                     if fcnn_gw_results else 0.0
                 )
 
@@ -593,8 +641,13 @@ class POCPipeline:
 
         # Dynamic fallback for Meta-MDS ROI mapping
         sid0 = self._subjects[0].subject_id if self._subjects else None
-        c_rois = list(self._human_rdms.get(sid0, {}).get("conscious", {}).keys()) if sid0 else []
-        example_roi = "fusiform" if "fusiform" in c_rois else (c_rois[0] if c_rois else "wholebrain")
+        c_rois = (
+            list(self._human_rdms.get(sid0, {}).get("conscious", {}).keys())
+            if sid0 else []
+        )
+        example_roi = (
+            "fusiform" if "fusiform" in c_rois else (c_rois[0] if c_rois else "wholebrain")
+        )
 
         # Meta-MDS for key ROIs
         for roi in [example_roi, "lateral_occipital"]:
@@ -670,7 +723,8 @@ def _parse_args() -> argparse.Namespace:
         help="Subject IDs to process (default: all in data.root)",
     )
     parser.add_argument(
-        "--stimulus-dir", default="./../soto_data/unconfeats/data/experiment_images_greyscaled",
+        "--stimulus-dir",
+        default="./../soto_data/unconfeats/data/experiment_images_greyscaled",
         help="Directory containing stimulus PNG/JPG images for FCNN embedding",
     )
     parser.add_argument(

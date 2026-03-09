@@ -45,10 +45,19 @@ class ROIExtractor:
         results: dict[str, np.ndarray] = {}
 
         for roi_name in self._roi_names:
-            # "wholebrain" is a reserved fallback name handled by SubjectBuilder;
-            # it is never a real mask file and must be skipped here to prevent
-            # the glob from matching the 4-D BOLD NIfTI (e.g. wholebrain_conscious.nii.gz)
-            # and loading it as a mask, which causes a shape-broadcast crash.
+            # FIX: "wholebrain" is a reserved fallback name handled by SubjectBuilder;
+            # it is never a real mask file and must be skipped here.
+            #
+            # ROOT CAUSE OF THE ORIGINAL BUG:
+            # The old _find_roi_mask glob fallback matched any *.nii* file whose
+            # name contained the roi_name string.  For roi_name="wholebrain" this
+            # matched "wholebrain_conscious.nii.gz" — the 4-D BOLD volume — and
+            # returned it as the mask path.  FMRILoader then loaded a 4-D array
+            # (88,88,66,T) as a "mask", which caused:
+            #   ERROR: operands could not be broadcast together with
+            #          shapes (88,88,66,T) (88,88,66)
+            # and reported ~43 million "voxels" instead of the expected ~120k.
+            # Skipping "wholebrain" here prevents that entirely.
             if roi_name == "wholebrain":
                 continue
 
@@ -56,6 +65,7 @@ class ROIExtractor:
             if roi_mask_path is None:
                 logger.warning("ROI mask not found for '%s' in %s – skipping", roi_name, roi_mask_dir)
                 continue
+
             roi_mask = self._loader.load_mask(roi_mask_path)
             try:
                 roi_patterns = self._loader.apply_roi_mask(full_patterns, full_mask, roi_mask)
@@ -82,13 +92,31 @@ class ROIExtractor:
 
     @staticmethod
     def _find_roi_mask(directory: Path, roi_name: str) -> Path | None:
-        """Search for <roi_name>_mask.nii.gz or <roi_name>_mask.nii."""
+        """Search for <roi_name>_mask.nii.gz or <roi_name>_mask.nii.
+
+        FIX: The original glob fallback used a substring match
+        (``roi_name.lower() in p.name.lower()``), which caused false positives.
+        For example, searching for roi_name="wholebrain" would match
+        "wholebrain_conscious.nii.gz" — a 4-D BOLD file — and return it as a
+        mask path.
+
+        The fallback is now restricted to files whose *stem starts with*
+        the roi_name (case-insensitive), which eliminates matches on BOLD
+        volumes that merely contain the ROI name as a prefix substring.
+        Named ROI mask files (e.g. "fusiform_mask.nii.gz") are unaffected
+        because they are found by the explicit suffix loop first.
+        """
+        # Preferred: exact canonical names
         for suffix in ("_mask.nii.gz", "_mask.nii", ".nii.gz", ".nii"):
             candidate = directory / f"{roi_name}{suffix}"
             if candidate.exists():
                 return candidate
-        # Also try case-insensitive partial match
+
+        # Glob fallback: only accept files whose stem *starts with* roi_name
+        # so that e.g. "wholebrain_conscious.nii.gz" is never matched when
+        # looking for a mask called "wholebrain".
         for p in directory.glob("*.nii*"):
-            if roi_name.lower() in p.name.lower():
+            if p.stem.lower().startswith(roi_name.lower()):
                 return p
+
         return None
