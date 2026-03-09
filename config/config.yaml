@@ -1,0 +1,97 @@
+# ============================================================
+#  POC: Relational Alignment of Conscious / Unconscious Reps
+#  Master Configuration
+# ============================================================
+
+# ── Data paths ────────────────────────────────────────────────
+data:
+  root: "data/raw"            # Root folder containing per-subject sub-folders
+  # ── Actual per-subject layout (ds003927 derivatives) ──────────────
+  # Each subject folder contains flat files at its root:
+  #   wholebrain_conscious.nii.gz   – 4D BOLD for conscious trials
+  #   wholebrain_unconscious.nii.gz – 4D BOLD for unconscious trials
+  #   wholebrain_glimpse.nii.gz     – 4D BOLD for glimpse trials
+  #   wholebrain_conscious.csv      – trial events for conscious trials
+  #   wholebrain_unconscious.csv    – trial events for unconscious trials
+  #   wholebrain_glimpse.csv        – trial events for glimpse trials
+  #   mask.nii.gz                   – single whole-brain binary mask
+  #   example_func.nii.gz           – reference functional image
+  #   anat/                         – anatomical directory (unused by pipeline)
+  # ──────────────────────────────────────────────────────────────────
+  subject_ids: []             # Leave empty to auto-discover from root
+  n_subjects: 7
+  n_sessions: 6
+  tr: 0.85                    # Repetition time in seconds
+  hrf_delay_seconds: 5.0      # Haemodynamic lag (approx. 4-7 s → 5-6 volumes at TR=0.85)
+  n_hrf_volumes: 5            # Number of volumes to average for HRF window
+  stimuli_csv_col:            # Column name mappings in behavioural CSVs
+    label: "labels"
+    category: "targets"       # Living_Things / Nonliving_Things
+    visibility: "visibility"  # "conscious" / "unconscious" / "glimpse"
+    volume: "volume_interest"
+    onset: "onset"
+  # Visibility states to include in analysis (glimpse excluded per paper)
+  visibility_states:
+    - "conscious"
+    - "unconscious"
+  # File naming convention (wholebrain_<state>.nii.gz / .csv)
+  nifti_prefix: "wholebrain"
+  mask_filename: "mask.nii.gz"
+
+# ── ROI names (matching FreeSurfer labels used in the paper) ──
+rois:
+  - pericalcarine
+  - lingual
+  - lateral_occipital
+  - fusiform
+  - inferior_temporal
+  - parahippocampal
+  - precuneus
+  - inferior_parietal
+  - superior_parietal
+  - superior_frontal
+  - middle_frontal
+  - inferior_frontal
+
+# ── FCNN settings (Phase 1) ───────────────────────────────────
+fcnn:
+  backbone: "mobilenet_v2"    # Most informative hidden repr per paper
+  pretrained: true
+  noise_levels:               # Gaussian noise σ² values
+    clear: 0
+    chance: 300               # Approx ROC-AUC < 0.55 threshold
+  n_noise_sessions: 20
+  batch_size: 8
+  device: "cpu"               # Switch to "cuda" if GPU available
+
+# ── RDM settings (Phase 2) ────────────────────────────────────
+rdm:
+  distance: "spearman"        # 1 - Spearman correlation
+  n_stimuli: 96
+
+# ── RSA settings (Phase 4) ────────────────────────────────────
+rsa:
+  n_permutations: 10000
+  alpha: 0.05
+  correction: "bonferroni"    # or "fdr_bh"
+
+# ── Gromov-Wasserstein settings (Phases 4 & 5) ────────────────
+gromov_wasserstein:
+  loss_fun: "square_loss"     # or "kl_loss"
+  armijo: false
+  log: true
+  top_k: 5                    # For Top-k Matching Rate
+  n_permutations: 10000
+
+# ── Visualization ─────────────────────────────────────────────
+visualization:
+  output_dir: "results/figures"
+  dpi: 150
+  meta_mds_n_components: 2
+
+# ── Output ────────────────────────────────────────────────────
+output:
+  results_dir: "results"
+  rdm_dir: "results/rdms"
+  embedding_dir: "results/embeddings"
+  stats_dir: "results/stats"
