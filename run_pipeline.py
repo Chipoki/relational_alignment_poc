@@ -351,6 +351,7 @@ class POCPipeline:
                 state=noise_state,
             )
             self._fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
+
             logger.info("Built FCNN RDM for noise_state=%s (n_stimuli=%d)", noise_state, len(valid_stims))
 
         # ---------------------------------------------------------
@@ -776,3 +777,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

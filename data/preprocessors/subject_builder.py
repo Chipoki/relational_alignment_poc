@@ -103,22 +103,13 @@ class SubjectBuilder:
             vol_col = self._settings.data["stimuli_csv_col"]["volume"]
             volumes = events_df[vol_col].dropna().astype(int).tolist()
 
-            # TODO - talk to Eden, how did she overcome this issue?
-            #  Before trusting the results, plot the mean signal of your extracted patterns over time.
-            #  If the patterns for "Living Things" look identical to "Non-living Things" even after this fix,
-            #  your t=0 synchronization is likely the culprit.
-            onsets = events_df["onset"].values
-            tr = self._settings.data["tr"]
-            hrf_delay = self._settings.data["hrf_delay_seconds"]
+            # Note! VolumeIndex==RowIndex, i.e. the CSV is already aligned to the NIfTI volumes.
+            volumes = list(range(len(events_df)))
 
-            # Calculate indices if the volume column is broken
-            if all(v == 1 for v in volumes):
-                logger.warning("volume_interest column is invalid. Reconstructing indices from onset.")
-                volumes = [int(round((o + hrf_delay) / tr)) for o in onsets]
-            else:
-                # Convert 1-based → 0-based if necessary
-                if volumes and min(volumes) >= 1:
-                    volumes = [v - 1 for v in volumes]
+            logger.info(
+                "[%s] state='%s': Mapping %d CSV rows to %d BOLD volumes.",
+                subject_id, state, len(events_df), len(volumes)
+            )
 
             # Load BOLD and extract whole-brain patterns
             bold = self._fmri.load_bold(nifti_path)

@@ -23,7 +23,7 @@ data:
   n_sessions: 6
   tr: 0.85                    # Repetition time in seconds
   hrf_delay_seconds: 5.0      # Haemodynamic lag (approx. 4-7 s → 5-6 volumes at TR=0.85)
-  n_hrf_volumes: 5            # Number of volumes to average for HRF window
+  n_hrf_volumes: 1            # Number of volumes to average for HRF window (set to 1 when using "derivatives" dir, since values are already HRF-averaged)
   stimuli_csv_col:            # Column name mappings in behavioural CSVs
     label: "labels"
     category: "targets"       # Living_Things / Nonliving_Things
