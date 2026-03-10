@@ -103,6 +103,9 @@ class FCNNEmbedder:
     for the 96 experimental stimuli at two noise levels:
         * clear  (noise_sigma² = 0)    → conscious-analog
         * noisy  (noise_sigma² = 300)  → unconscious-analog
+
+    Fine-tuning is performed once and the checkpoint is persisted to disk.
+    On subsequent runs the checkpoint is loaded automatically, skipping training.
     """
 
     _IMAGENET_MEAN = [0.485, 0.456, 0.406]
@@ -115,11 +118,26 @@ class FCNNEmbedder:
         self._n_sessions: int = cfg.get("n_noise_sessions", 20)
         self._batch_size: int = cfg.get("batch_size", 8)
 
+        # Checkpoint path: from config if provided, else default location
+        checkpoint_rel = cfg.get("checkpoint_path", "checkpoints/fcnn_finetuned.pt")
+        self._checkpoint_path = Path(checkpoint_rel)
+        self._checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+
         self._model = _FCNNModel(
             n_hidden_units=cfg.get("n_hidden_units", 300),
             dropout_rate=cfg.get("dropout_rate", 0.0),
             hidden_activation=cfg.get("hidden_activation", "relu"),
         ).to(self._device)
+
+        # Auto-load checkpoint if it already exists
+        if self._checkpoint_path.exists():
+            self._load_checkpoint(self._checkpoint_path)
+        else:
+            logger.info(
+                "No FCNN checkpoint found at %s – model will use ImageNet init "
+                "until finetune() is called.", self._checkpoint_path
+            )
+
         self._model.eval()
 
         self._transform = T.Compose([
@@ -130,11 +148,13 @@ class FCNNEmbedder:
 
     # ── Public API ───────────────────────────────────────────────────────────
 
+    def is_finetuned(self) -> bool:
+        """Return True if a fine-tuned checkpoint already exists on disk."""
+        return self._checkpoint_path.exists()
+
     def load_weights(self, checkpoint_path: str | Path) -> None:
-        """Load fine-tuned weights from a .pt/.pth checkpoint."""
-        state = torch.load(str(checkpoint_path), map_location=self._device)
-        self._model.load_state_dict(state)
-        logger.info("Loaded FCNN weights from %s", checkpoint_path)
+        """Load fine-tuned weights from a .pt/.pth checkpoint (manual override)."""
+        self._load_checkpoint(Path(checkpoint_path))
 
     def extract_embeddings(
         self,
@@ -180,19 +200,42 @@ class FCNNEmbedder:
         train_labels: list[int],
         n_epochs: int = 30,
         lr: float = 1e-4,
+        checkpoint_path: str | Path | None = None,
     ) -> None:
         """
         Fine-tune the hidden + classifier layers on clear images.
         Convolutional backbone remains frozen.
+
+        If ``checkpoint_path`` (or the instance-level ``self._checkpoint_path``)
+        already exists on disk the method returns immediately without training,
+        ensuring idempotent pipeline runs.
+
+        After training completes the checkpoint is saved automatically.
         """
+        save_path = Path(checkpoint_path) if checkpoint_path is not None else self._checkpoint_path
+
+        # ── Idempotency guard: skip if checkpoint already present ─────────
+        if save_path.exists():
+            logger.info(
+                "FCNN checkpoint already exists at %s – skipping fine-tuning.", save_path
+            )
+            # Ensure weights are loaded (may already be loaded from __init__)
+            self._load_checkpoint(save_path)
+            self._model.eval()
+            return
+
+        logger.info("Starting FCNN fine-tuning for %d epochs (lr=%.1e)…", n_epochs, lr)
+
         self._model.train()
         for p in list(self._model.hidden.parameters()) + list(self._model.classifier.parameters()):
             p.requires_grad = True
+
         optimizer = torch.optim.Adam(
             list(self._model.hidden.parameters()) + list(self._model.classifier.parameters()),
             lr=lr,
         )
         criterion = nn.CrossEntropyLoss()
+
         dataset = _ImageDataset(train_paths, self._transform)
         loader = DataLoader(dataset, batch_size=self._batch_size, shuffle=True)
 
@@ -214,7 +257,17 @@ class FCNNEmbedder:
 
         self._model.eval()
 
+        # ── Save checkpoint ───────────────────────────────────────────────
+        save_path.parent.mkdir(parents=True, exist_ok=True)
+        torch.save(self._model.state_dict(), str(save_path))
+        logger.info("FCNN checkpoint saved → %s", save_path)
+
     # ── Private helpers ──────────────────────────────────────────────────────
+
+    def _load_checkpoint(self, path: Path) -> None:
+        state = torch.load(str(path), map_location=self._device)
+        self._model.load_state_dict(state)
+        logger.info("Loaded FCNN weights from %s", path)
 
     def _run_inference(
         self,
