@@ -74,6 +74,7 @@ rsa:
   n_permutations: 10000
   alpha: 0.05
   correction: "bonferroni"    # or "fdr_bh"
+  seed: 42
 
 # ── Gromov-Wasserstein settings (Phases 4 & 5) ────────────────
 gromov_wasserstein:

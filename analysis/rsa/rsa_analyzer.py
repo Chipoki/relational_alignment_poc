@@ -56,6 +56,7 @@ class RSAAnalyzer:
         self._n_perms: int = cfg["n_permutations"]
         self._alpha: float = cfg["alpha"]
         self._correction: str = cfg.get("correction", "bonferroni")
+        self._rng = np.random.default_rng(cfg.get("seed", 42))
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -159,13 +160,13 @@ class RSAAnalyzer:
             return 0.0, 1.0
 
         null_dist = np.zeros(self._n_perms)
-        rng = np.random.default_rng()
         for k in range(self._n_perms):
-            perm_b = rng.permutation(vec_b)
+            perm_b = self._rng.permutation(vec_b)
             rho_k, _ = spearmanr(vec_a, perm_b)
             null_dist[k] = rho_k if np.isfinite(rho_k) else 0.0
 
-        p_value = float((null_dist >= obs_rho).mean())
+        p_value = float((np.abs(null_dist) >= np.abs(obs_rho)).mean())  # two-tailed
+
         return float(obs_rho), p_value
 
     def _apply_correction(self, results: list[RSAResult]) -> list[RSAResult]:

@@ -41,6 +41,9 @@ def run(
             if len(roi_rdms) < 2:
                 continue
 
+            #  TODO - I would like to visualize second order RDMs of instances with p < 0.02
+            #   also - it seems (down the line) that the RSAResult of c_results and u_results is filled in
+            #   a hardcoded manner? requires inspection
             rsa_results = rsa_analyzer.inter_subject_rsa(roi_rdms)
             mean_rho = rsa_analyzer.mean_rho(rsa_results)
             nc = noise_ceiling.compute(roi_rdms)
