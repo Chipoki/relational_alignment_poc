@@ -104,22 +104,13 @@ def run(
 
     for noise_state, store_key in [("clear", "fcnn_clear"), ("chance", "fcnn_chance")]:
         names_key = f"{store_key}_names"
-        rdm_save_path = rdm_dir / f"fcnn_rdm_{noise_state}.npy"
-        rdm_meta_path = rdm_dir / f"fcnn_rdm_{noise_state}_meta.npz"
+        # Single-file cache path – uses RDMBuilder.save/load format
+        rdm_cache_path = rdm_dir / f"fcnn_rdm_{noise_state}.npy"
 
-        # Load from disk if already built
-        if rdm_save_path.exists() and rdm_meta_path.exists():
+        # ── Load from disk if already built ──────────────────────────────
+        if rdm_cache_path.exists():
             logger.info("Cached FCNN RDM found for '%s' – loading from disk.", noise_state)
-            matrix = np.load(str(rdm_save_path))
-            meta = np.load(str(rdm_meta_path), allow_pickle=True)
-            fcnn_rdm = rdm_builder.build_from_matrix(
-                matrix=matrix,
-                stimulus_names=meta["stimulus_names"],
-                labels=meta["labels"],
-                roi_or_layer="fcnn_hidden",
-                subject_id=f"fcnn_{noise_state}",
-                state=noise_state,
-            )
+            fcnn_rdm = RDMBuilder.load(str(rdm_cache_path))
             fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
             continue
 
@@ -169,12 +160,11 @@ def run(
         )
         fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
 
-        # Save matrix + metadata in real-time
-        np.save(str(rdm_save_path), fcnn_rdm.matrix)
-        np.savez(str(rdm_meta_path), stimulus_names=np.array(valid_stims), labels=np.array(valid_labels))
+        # ── Save in real-time using RDMBuilder.save (single-file format) ─
+        RDMBuilder.save(fcnn_rdm, str(rdm_cache_path))
         logger.info(
             "Built and saved FCNN RDM for noise_state=%s (n_stimuli=%d) → %s",
-            noise_state, len(valid_stims), rdm_save_path,
+            noise_state, len(valid_stims), rdm_cache_path,
         )
 
     # ── FCNN Dual-State RDM Figure ────────────────────────────────────────

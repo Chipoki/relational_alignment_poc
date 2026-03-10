@@ -120,13 +120,12 @@ class RDMBuilder:
         """
         n = patterns.shape[0]
         if n < 2:
-             return RDM(np.zeros((n,n)), stimulus_names, labels, roi_or_layer, subject_id, state)
+             return RDM(np.zeros((n, n)), stimulus_names, labels, roi_or_layer, subject_id, state)
 
         # Rank transform each row (stimulus pattern) using scipy rankdata
-        # rankdata properly handles ties by assigning average rank values.
         ranked = np.apply_along_axis(rankdata, 1, patterns)
 
-        # Compute Pearson correlation on rank-transformed patterns ≡ Spearman
+        # Pearson correlation on rank-transformed patterns ≡ Spearman
         corr_matrix = np.corrcoef(ranked)
 
         # Guard against zero-variance rows causing NaNs
@@ -138,6 +137,39 @@ class RDMBuilder:
 
         return RDM(
             matrix=dist_matrix,
+            stimulus_names=stimulus_names,
+            labels=labels,
+            roi_or_layer=roi_or_layer,
+            subject_id=subject_id,
+            state=state,
+        )
+
+    def build_from_matrix(
+        self,
+        matrix: np.ndarray,
+        stimulus_names: np.ndarray,
+        labels: np.ndarray,
+        roi_or_layer: str,
+        subject_id: str,
+        state: str,
+    ) -> RDM:
+        """
+        Wrap a pre-computed dissimilarity matrix in an RDM object.
+
+        Use this when loading a cached matrix from disk rather than
+        recomputing from raw patterns.
+
+        Parameters
+        ----------
+        matrix          : (n_stimuli, n_stimuli) pre-computed distance matrix
+        stimulus_names  : (n_stimuli,) string array
+        labels          : (n_stimuli,) binary category labels
+        roi_or_layer    : name tag for the region / layer
+        subject_id      : participant identifier
+        state           : visibility or noise state
+        """
+        return RDM(
+            matrix=matrix,
             stimulus_names=stimulus_names,
             labels=labels,
             roi_or_layer=roi_or_layer,
