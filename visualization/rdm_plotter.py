@@ -50,8 +50,8 @@ class RDMPlotter:
         ax.axvline(n_living - 0.5, color="black", lw=1.5)
 
         # Labels
-        ax.set_xlabel("Stimuli (sorted by category)")
-        ax.set_ylabel("Stimuli (sorted by category)")
+        ax.set_xlabel("Stimuli (Living → Non-living)")
+        ax.set_ylabel("Stimuli (Living → Non-living)")
         _title = title or f"{rdm.subject_id} | {rdm.state} | {rdm.roi_or_layer}"
         ax.set_title(_title, fontsize=10, pad=8)
 
@@ -98,8 +98,14 @@ class RDMPlotter:
             ax.axhline(n_living - 0.5, color="black", lw=1.5)
             ax.axvline(n_living - 0.5, color="black", lw=1.5)
             ax.set_title(f"{label}\n{rdm.roi_or_layer}", fontsize=9)
-            ax.set_xlabel("Stimuli"); ax.set_ylabel("Stimuli")
-            plt.colorbar(im, ax=ax, shrink=0.8)
+
+            # Added explicit axis labels
+            ax.set_xlabel("Stimuli (Living → Non-living)")
+            ax.set_ylabel("Stimuli (Living → Non-living)")
+
+            # Added label to colorbar
+            cb = plt.colorbar(im, ax=ax, shrink=0.8)
+            cb.set_label("Dissimilarity (1 − Spearman ρ)")
 
         if suptitle:
             fig.suptitle(suptitle, y=1.01, fontsize=11)

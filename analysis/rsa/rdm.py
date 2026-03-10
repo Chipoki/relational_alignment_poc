@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Literal
 
 import numpy as np
-from scipy.stats import spearmanr
+from scipy.stats import spearmanr, rankdata
 
 logger = logging.getLogger(__name__)
 
@@ -119,20 +119,19 @@ class RDMBuilder:
         Equivalent to the loop version but ~10× faster for large n.
         """
         n = patterns.shape[0]
-        # Rank transform each row (stimulus pattern)
-        ranked = np.apply_along_axis(
-            lambda x: np.argsort(np.argsort(x)).astype(float), axis=1, arr=patterns
-        )
-        # Centre ranks
-        ranked -= ranked.mean(axis=1, keepdims=True)
+        if n < 2:
+             return RDM(np.zeros((n,n)), stimulus_names, labels, roi_or_layer, subject_id, state)
+
+        # Rank transform each row (stimulus pattern) using scipy rankdata
+        # rankdata properly handles ties by assigning average rank values.
+        ranked = np.apply_along_axis(rankdata, 1, patterns)
 
         # Compute Pearson correlation on rank-transformed patterns ≡ Spearman
-        norms = np.linalg.norm(ranked, axis=1, keepdims=True)
-        norms[norms == 0] = 1.0
-        ranked_norm = ranked / norms
-        corr_matrix = ranked_norm @ ranked_norm.T
+        corr_matrix = np.corrcoef(ranked)
+
+        # Guard against zero-variance rows causing NaNs
+        corr_matrix = np.nan_to_num(corr_matrix, nan=0.0)
         corr_matrix = np.clip(corr_matrix, -1.0, 1.0)
-        np.fill_diagonal(corr_matrix, 1.0)
 
         dist_matrix = 1.0 - corr_matrix
         np.fill_diagonal(dist_matrix, 0.0)

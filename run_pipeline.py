@@ -278,6 +278,8 @@ class POCPipeline:
         # ---------------------------------------------------------
         # FCNN RDMs
         # ---------------------------------------------------------
+        human_state_map = {"clear": "conscious", "chance": "unconscious"}
+
         for noise_state, store_key in [("clear", "fcnn_clear"), ("chance", "fcnn_chance")]:
             names_key = f"{store_key}_names"
             if not self._embedding_store.exists(store_key) or not self._embedding_store.exists(names_key):
@@ -287,19 +289,30 @@ class POCPipeline:
             fcnn_emb = self._embedding_store.load(store_key)   # (n_images, n_units)
             fcnn_names = self._embedding_store.load(names_key)  # (n_images,) string array
 
-            if ref_subj is None or ref_subj.conscious is None:
+            # FIX: Map FCNN noise_state to appropriate corresponding human visibility state stimuli
+            human_state = human_state_map[noise_state]
+            ref_stims = common_stims_by_state.get(human_state, [])
+
+            if not ref_stims:
+                logger.warning("No common stimuli found for human state '%s' to align with FCNN '%s'.", human_state, noise_state)
                 continue
 
-            # We use conscious state common stimuli to align the FCNN outputs
-            ref_stims = common_stims_by_state.get("conscious", [])
-            if not ref_stims:
+            # Need to get labels from a subject that has this state loaded
+            vis_data = None
+            for s in self._subjects:
+                vis_data = getattr(s, human_state, None)
+                if vis_data is not None:
+                    break
+
+            if vis_data is None:
                 continue
 
             stim_to_label = {
                 s: l for s, l in zip(
-                    ref_subj.conscious.stimulus_names, ref_subj.conscious.labels
+                    vis_data.stimulus_names, vis_data.labels
                 )
             }
+
             sorted_ref_stims = sorted(
                 ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x)
             )
