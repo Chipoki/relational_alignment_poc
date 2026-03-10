@@ -356,9 +356,7 @@ class POCPipeline:
         # ---------------------------------------------------------
         # Phase 2 Visualization: Dual-state RDMs — ALL subjects
         # ---------------------------------------------------------
-        # FIX: was `for subj in self._subjects[:2]` — a debug slice that was
-        # never removed, causing plots to be saved for sub-01 and sub-02 only.
-        # Changed to iterate over all subjects.
+        # FIX: iterate over all subjects.
         for subj in self._subjects:
             sid = subj.subject_id
             c_rois = list(self._human_rdms.get(sid, {}).get("conscious", {}).keys())
@@ -373,9 +371,6 @@ class POCPipeline:
             u_rdm = self._human_rdms.get(sid, {}).get("unconscious", {}).get(example_roi)
 
             if c_rdm and u_rdm:
-                # FIX: pass n_stimuli so the plotter can annotate each panel,
-                # and use improved titles / axis labels (handled inside
-                # RDMPlotter.plot_dual_state — see visualization/rdm_plotter.py).
                 self._rdm_plotter.plot_dual_state(
                     c_rdm, u_rdm,
                     suptitle=(

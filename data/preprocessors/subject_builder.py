@@ -115,10 +115,10 @@ class SubjectBuilder:
             if all(v == 1 for v in volumes):
                 logger.warning("volume_interest column is invalid. Reconstructing indices from onset.")
                 volumes = [int(round((o + hrf_delay) / tr)) for o in onsets]
-
-            # Convert 1-based → 0-based if necessary
-            if volumes and min(volumes) >= 1:
-                volumes = [v - 1 for v in volumes]
+            else:
+                # Convert 1-based → 0-based if necessary
+                if volumes and min(volumes) >= 1:
+                    volumes = [v - 1 for v in volumes]
 
             # Load BOLD and extract whole-brain patterns
             bold = self._fmri.load_bold(nifti_path)
