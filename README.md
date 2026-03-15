@@ -195,6 +195,76 @@ print(pipeline.gw_results)  # dict: roi → GWResult
 
 ---
 
+## ROI masks acquisition
+
+The original paper used FreeSurfer-derived ROIs in native BOLD space, which are not included
+in the ds003927 derivatives. You can generate these masks locally by following these steps:
+
+1. Install FreeSurfer and set up the environment: https://surfer.nmr.mgh.harvard.edu/fswiki/DownloadAndInstall
+
+```bash
+wget -c https://surfer.nmr.mgh.harvard.edu/pub/dist/freesurfer/6.0.0/freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz
+tar -zxvf freesurfer-Linux-centos6_x86_64-stable-pub-v6.0.0.tar.gz -C ~/
+```
+then obtain the license key (free for academic use) and place it in `~/freesurfer/license.txt`.
+and finally - update your `.bashrc` to source the FreeSurfer environment:
+```bash
+nano ~/.bashrc
+```
+    Scroll to the very bottom and paste these exact lines:
+```bash
+# FreeSurfer Setup
+export FREESURFER_HOME=~/freesurfer
+source $FREESURFER_HOME/SetUpFreeSurfer.sh
+```
+    Then save and exit (Ctrl+O, Enter, Ctrl+X). Finally, reload the `.bashrc` to apply the changes:
+```bash
+source ~/.bashrc
+```
+    And verify the installation:
+```bash
+recon-all --help
+```
+
+2. Set up the FSL environment (required for FreeSurfer's `bbregister` to perform the BOLD-to-anatomical registration):
+
+    use wget to directly download the pre-compiled, offline archive of FSL 6.0.5
+    (which perfectly satisfies the methodology requirement) and manually extract it:
+```bash
+wget -c https://fsl.fmrib.ox.ac.uk/fsldownloads/fsl-6.0.5-centos7_64.tar.gz
+tar -xzf fsl-6.0.5-centos7_64.tar.gz -C /path/to/fsl
+```
+    tell your PC (in my case, ubuntu 24.04) to use the FSL binaries by adding the following lines to your `.bashrc`:
+```bash
+nano ~/.bashrc
+```
+    Scroll to the very bottom and paste these exact lines:
+```bash
+# FSL Offline Setup
+FSLDIR=~/fsl
+PATH=${FSLDIR}/bin:${PATH}
+export FSLDIR PATH
+. ${FSLDIR}/etc/fslconf/fsl.sh
+```
+    Then save and exit (Ctrl+O, Enter, Ctrl+X). Finally, reload the `.bashrc` to apply the changes:
+```bash
+source ~/.bashrc
+```
+    And make sure the tools are responding:
+```bash
+flirt -version
+```
+
+3. prepare the conda env required for running the utils/extract_roi.py script, then execute it. This script performs the following steps for each subject:
+
+    - Runs FreeSurfer's `recon-all` on the anatomical scan to obtain cortical parcellations
+    - Uses `bbregister` to compute the BOLD-to-anatomical registration
+    - Applies the registration to transform the desired ROIs (e.g. V1, V2, LOC, FFA, PPA, etc.) into native BOLD space
+    - Saves the resulting binary masks as `<roi_name>_mask.nii.gz` in `sub-#n/func_masks/` for each subject
+
+```bash
+---
+
 ## Reference
 
 Mei N, Santana R, Soto D (2022).  

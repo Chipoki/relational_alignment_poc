@@ -118,6 +118,12 @@ class SubjectBuilder:
 
             # Extract per-ROI patterns from whole-brain patterns.
             roi_dir = self._resolve_roi_dir(subject_root)
+
+            # Instead of using self._settings.roi_names, find what's actually there:
+            available_masks = [f.name.replace("_mask.nii.gz", "") for f in roi_dir.glob("*_mask.nii*")]
+            # Update the extractor's target list temporarily for this subject
+            self._roi_extractor._roi_names = available_masks
+
             roi_patterns = self._roi_extractor.extract_all_rois(
                 patterns, full_mask, roi_dir
             )
