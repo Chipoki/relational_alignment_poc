@@ -62,12 +62,14 @@ class POCPipeline:
     # ── Subject loading ──────────────────────────────────────────────────────
 
     def load_subjects(self, subject_ids: list[str] | None = None) -> None:
+        """Discover and load all subjects, then register actual ROIs with settings."""
         root = Path(self._cfg.data["root"])
         if not root.exists():
             raise FileNotFoundError(
                 f"Data root not found: {root}\n"
                 "Please set data.root in config/config.yaml."
             )
+
         ids = subject_ids or self._cfg.data.get("subject_ids") or []
         if not ids:
             ids = sorted(p.name for p in root.iterdir() if p.is_dir())
@@ -83,15 +85,27 @@ class POCPipeline:
             except Exception as exc:
                 logger.error("✗ Failed to load subject %s: %s", sid, exc)
 
-        logger.info("Loaded %d / %d subjects successfully", len(self._subjects), len(ids))
+        logger.info(
+            "Loaded %d / %d subjects successfully", len(self._subjects), len(ids)
+        )
+
+        # ── Register the ROIs that actually exist in the data ─────────────
+        # This makes settings.active_roi_names authoritative for all downstream
+        # phases.  wholebrain is always included; any FreeSurfer region masks
+        # found in func_masks/ are added on top.
+        self._subject_builder.register_rois_with_settings()
 
     # ── Phase dispatch ───────────────────────────────────────────────────────
 
     def phase0_finetune_fcnn(self, stimulus_image_dir=None) -> None:
-        phase0_finetune.run(self._cfg, self._fcnn_embedder, self._subjects, stimulus_image_dir)
+        phase0_finetune.run(
+            self._cfg, self._fcnn_embedder, self._subjects, stimulus_image_dir
+        )
 
     def phase1_extract_embeddings(self, stimulus_image_dir=None) -> None:
-        phase1_embeddings.run(self._fcnn_embedder, self._embedding_store, stimulus_image_dir)
+        phase1_embeddings.run(
+            self._fcnn_embedder, self._embedding_store, stimulus_image_dir
+        )
 
     def phase2_build_rdms(self) -> None:
         self._human_rdms, self._fcnn_rdms = phase2_rdms.run(
@@ -122,7 +136,7 @@ class POCPipeline:
         phase6_visualize.run(
             self._subjects, self._human_rdms, self._fcnn_rdms,
             self._gw_aligner, self._meta_mds_plotter,
-            settings=self._cfg,          # ← new: needed for roi_names ordering
+            settings=self._cfg,
         )
 
     # ── Full pipeline ────────────────────────────────────────────────────────
@@ -137,4 +151,6 @@ class POCPipeline:
         self.phase4_cross_modality_alignment()
         self.phase5_structural_invariance()
         self.phase6_visualize()
-        logger.info("Pipeline complete. Results saved to: %s", self._cfg.results_dir)
+        logger.info(
+            "Pipeline complete. Results saved to: %s", self._cfg.results_dir
+        )

@@ -111,32 +111,29 @@ def processing_thread(log_queue, root_window):
         else:
             log_queue.put(f"[{sub}] FreeSurfer v6.0.0 workspace found. Skipping recon-all.\n")
 
-        # STEP 1: Extract FreeSurfer .label files
-        log_queue.put(f"[{sub}] Extracting FreeSurfer .label files...\n")
-        for hemi in ["lh", "rh"]:
-            cmd_annot = ["mri_annotation2label", "--subject", sub, "--hemi", hemi,
-                         "--annotation", "aparc", "--outdir", out_label_dir]
-            run_subprocess(cmd_annot, log_queue, env=env)
+        fs_brain_mgz = os.path.join(fs_workspace, sub, "mri", "brain.mgz")
+        fs_brain_nii = os.path.join(out_mask_dir, "fs_brain.nii.gz")
 
-        # STEP 2: FSL FLIRT Registration
+        # Convert FreeSurfer's internal brain to NIfTI
+        if not os.path.exists(fs_brain_nii):
+            run_subprocess(["mri_convert", fs_brain_mgz, fs_brain_nii], log_queue, env=env)
+
+        # STEP 2: FSL FLIRT Registration (Using FreeSurfer's brain, NOT raw t1_brain)
         log_queue.put(f"[{sub}] Calculating 7-DOF registration matrix...\n")
         anat2func_mat = os.path.join(out_mask_dir, "anat2func.mat")
-        cmd_flirt = ["flirt", "-in", t1_brain, "-ref", example_func, "-omat", anat2func_mat, "-dof", "7"]
+        cmd_flirt = ["flirt", "-in", fs_brain_nii, "-ref", example_func, "-omat", anat2func_mat, "-dof", "7"]
         run_subprocess(cmd_flirt, log_queue, env=env)
 
         # STEP 3: Create volumetric masks and binarize
         log_queue.put(f"[{sub}] Projecting and binarizing 12 functional ROIs...\n")
         for roi_name, fs_labels in roi_mapping.items():
-            # Paths for intermediate anatomical files
             lh_anat = os.path.join(out_mask_dir, f"{roi_name}_lh_anat.nii.gz")
             rh_anat = os.path.join(out_mask_dir, f"{roi_name}_rh_anat.nii.gz")
             combined_anat = os.path.join(out_mask_dir, f"{roi_name}_anat.nii.gz")
             func_mask = os.path.join(out_mask_dir, f"{roi_name}_mask.nii.gz")
 
-            # A. Process LH and RH separately
             for hemi, out_vol in [("lh", lh_anat), ("rh", rh_anat)]:
-                hemi_labels = [os.path.join(out_label_dir, f"{hemi}.{lbl}.label")
-                               for lbl in fs_labels]
+                hemi_labels = [os.path.join(out_label_dir, f"{hemi}.{lbl}.label") for lbl in fs_labels]
                 hemi_labels = [l for l in hemi_labels if os.path.exists(l)]
 
                 if not hemi_labels:
@@ -146,14 +143,15 @@ def processing_thread(log_queue, root_window):
                 for lbl in hemi_labels:
                     label_args.extend(["--label", lbl])
 
+                # FIX: Use fs_brain_nii as the template and regheader to guarantee alignment
                 cmd_label2vol = ["mri_label2vol"] + label_args + [
-                    "--temp", t1_brain, "--subject", sub, "--hemi", hemi,  # Added --hemi
-                    "--regheader", t1_brain, "--o", out_vol,
+                    "--temp", fs_brain_nii, "--subject", sub, "--hemi", hemi,
+                    "--regheader", fs_brain_nii, "--o", out_vol,
                     "--proj", "frac", "0", "1", ".1", "--fillthresh", ".3"
                 ]
                 run_subprocess(cmd_label2vol, log_queue, env=env)
 
-            # B. Merge Hemispheres
+            # Merge Hemispheres
             if os.path.exists(lh_anat) and os.path.exists(rh_anat):
                 run_subprocess(["fslmaths", lh_anat, "-add", rh_anat, combined_anat], log_queue, env=env)
             elif os.path.exists(lh_anat):
@@ -163,13 +161,12 @@ def processing_thread(log_queue, root_window):
             else:
                 continue
 
-            # C. Register to functional space and binarize
+            # Register to functional space and binarize
             cmd_applyxfm = ["flirt", "-in", combined_anat, "-ref", example_func, "-applyxfm",
                             "-init", anat2func_mat, "-interp", "nearestneighbour", "-out", func_mask]
             run_subprocess(cmd_applyxfm, log_queue, env=env)
             run_subprocess(["fslmaths", func_mask, "-bin", func_mask], log_queue, env=env)
 
-            # Clean up
             for f in [lh_anat, rh_anat, combined_anat]:
                 if os.path.exists(f): os.remove(f)
 

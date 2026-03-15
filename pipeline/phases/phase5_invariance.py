@@ -19,7 +19,6 @@ def run(
     gw_aligner: GromovWassersteinAligner,
     summary_plotter: SummaryPlotter,
 ) -> dict:
-    """ΔGW_human (conscious→unconscious) vs ΔGW_FCNN (clear→chance)."""
     logger.info("=" * 60)
     logger.info("PHASE 5 – Structural Invariance Metric")
     logger.info("=" * 60)
@@ -30,7 +29,7 @@ def run(
 
     summary: dict = {}
 
-    for roi in settings.roi_names:
+    for roi in settings.active_roi_names:                  # ← active_roi_names
         c_rdms = [
             human_rdms[sid]["conscious"][roi]
             for sid in human_rdms
@@ -62,10 +61,9 @@ def run(
 
     save_json(summary, Path(settings.stats_dir) / "phase5_structural_invariance.json")
 
-    # ── Combined scatter across all ROIs ──────────────────────────────────
     if summary:
         summary_plotter.plot_structural_invariance(
-            summary, settings.roi_names,
+            summary, settings.active_roi_names,            # ← active_roi_names
             save_name="phase5_structural_invariance.png",
             subdir="phase5_invariance",
         )

@@ -24,22 +24,20 @@ def run(
     gw_aligner: GromovWassersteinAligner,
     summary_plotter: SummaryPlotter,
 ) -> dict:
-    """Compute inter-subject RSA + noise ceiling + GW alignment (Phase 3)."""
     logger.info("=" * 60)
     logger.info("PHASE 3 – Balanced Inter-Subject Representational Analysis")
     logger.info("=" * 60)
 
     phase3_plotter = Phase3Plotter(settings)
-    summary: dict = {}
+    summary: dict  = {}
 
-    # Accumulators for cross-ROI bonus plots
     all_rsa_results: dict[str, dict[str, list[RSAResult]]] = {}
     all_roi_rdms:    dict[str, dict[str, list[RDM]]]       = {}
 
     # ── Per-ROI per-state RSA + noise ceiling ────────────────────────────
     for state in ("conscious", "unconscious"):
         state_summary: dict = {}
-        for roi in settings.roi_names:
+        for roi in settings.active_roi_names:              # ← active_roi_names
             roi_rdms: list[RDM] = [
                 human_rdms[sid][state][roi]
                 for sid in human_rdms
@@ -67,7 +65,6 @@ def run(
             all_roi_rdms.setdefault(roi,  {})[state] = roi_rdms
             all_rsa_results.setdefault(roi, {})[state] = rsa_results
 
-            # Feature 1 – second-order RDMs for pairs with p < 0.02
             n_below = sum(r.p_value < Phase3Plotter.P_THRESHOLD for r in rsa_results)
             if n_below > 0:
                 logger.info(
@@ -84,11 +81,10 @@ def run(
         summary[state] = state_summary
 
     # ── Feature 2 – GW matrices: C×C, U×U, C×U per ROI ──────────────────
-    for roi in settings.roi_names:
+    for roi in settings.active_roi_names:                  # ← active_roi_names
         rdms_c = all_roi_rdms.get(roi, {}).get("conscious",   [])
         rdms_u = all_roi_rdms.get(roi, {}).get("unconscious", [])
 
-        # C×C
         if len(rdms_c) >= 2:
             ids_c = [f"{rdm.subject_id}_con" for rdm in rdms_c]
             gw_cc = gw_aligner.build_pairwise_distance_matrix(rdms_c, ids_c)
@@ -99,10 +95,7 @@ def run(
                 save_name=f"phase3_gw_matrix_{roi}_conscious_x_conscious.png",
                 subdir=f"phase3_gw/{roi}",
             )
-            logger.info("  ROI %s | GW C×C mean=%.4f", roi,
-                        gw_cc.matrix[gw_cc.matrix > 0].mean() if gw_cc.matrix.any() else 0.0)
 
-        # U×U
         if len(rdms_u) >= 2:
             ids_u = [f"{rdm.subject_id}_unc" for rdm in rdms_u]
             gw_uu = gw_aligner.build_pairwise_distance_matrix(rdms_u, ids_u)
@@ -113,10 +106,7 @@ def run(
                 save_name=f"phase3_gw_matrix_{roi}_unconscious_x_unconscious.png",
                 subdir=f"phase3_gw/{roi}",
             )
-            logger.info("  ROI %s | GW U×U mean=%.4f", roi,
-                        gw_uu.matrix[gw_uu.matrix > 0].mean() if gw_uu.matrix.any() else 0.0)
 
-        # C×U
         if len(rdms_c) >= 1 and len(rdms_u) >= 1:
             all_rdms_cu = rdms_c + rdms_u
             ids_cu = (
@@ -126,10 +116,6 @@ def run(
             gw_cu = gw_aligner.build_pairwise_distance_matrix(all_rdms_cu, ids_cu)
             gw_cu.state = "conscious_vs_unconscious"; gw_cu.roi_or_layer = roi
             phase3_plotter.plot_inter_state_gw_matrix(gw_cu, roi=roi)
-            n_c = len(rdms_c)
-            cross = gw_cu.matrix[:n_c, n_c:]
-            logger.info("  ROI %s | GW C×U mean=%.4f", roi,
-                        float(cross.mean()) if cross.size > 0 else 0.0)
 
     # ── Feature 3a – ρ violin plots ───────────────────────────────────────
     results_by_roi = {
@@ -137,7 +123,7 @@ def run(
             state: all_rsa_results.get(roi, {}).get(state, [])
             for state in ("conscious", "unconscious")
         }
-        for roi in settings.roi_names if roi in all_rsa_results
+        for roi in settings.active_roi_names if roi in all_rsa_results  # ← active_roi_names
     }
     if results_by_roi:
         phase3_plotter.plot_rho_violins(results_by_roi, save_name="phase3_rho_violins.png")
@@ -159,12 +145,12 @@ def run(
     if summary:
         phase3_plotter.plot_noise_ceiling_bars(
             summary=summary,
-            roi_names=settings.roi_names,
+            roi_names=settings.active_roi_names,           # ← active_roi_names
             save_name="phase3_noise_ceiling_bars.png",
         )
         logger.info("Saved noise ceiling bar chart.")
 
-    # ── Original summary bar chart (backward compat) ──────────────────────
+    # ── Summary bar chart (backward compat) ──────────────────────────────
     c_sum = [
         RSAResult(subject_a="avg", subject_b="avg", roi_or_layer=roi,
                   state_a="conscious", state_b="conscious",
@@ -180,7 +166,7 @@ def run(
     if c_sum or u_sum:
         summary_plotter.plot_rsa_by_roi(
             c_sum, u_sum,
-            roi_names=settings.roi_names,
+            roi_names=settings.active_roi_names,           # ← active_roi_names
             save_name="phase3_rsa_by_roi.png",
             subdir="phase3_rsa",
         )

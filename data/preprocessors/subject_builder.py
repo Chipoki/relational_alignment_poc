@@ -3,15 +3,14 @@
 Adapted for the flat ds003927 derivative layout::
 
     <subject_root>/
-        wholebrain_conscious.nii.gz    – 4D BOLD (conscious trials already separated)
-        wholebrain_unconscious.nii.gz  – 4D BOLD (unconscious trials)
-        wholebrain_glimpse.nii.gz      – 4D BOLD (glimpse trials, unused by default)
-        wholebrain_conscious.csv       – trial events for conscious trials
-        wholebrain_unconscious.csv     – trial events for unconscious trials
-        wholebrain_glimpse.csv         – trial events for glimpse trials
-        mask.nii.gz                    – single shared whole-brain binary mask
-        example_func.nii.gz            – reference functional image
-        anat/                          – anatomical directory (not used here)
+        wholebrain_conscious.nii.gz
+        wholebrain_unconscious.nii.gz
+        wholebrain_conscious.csv
+        wholebrain_unconscious.csv
+        mask.nii.gz
+        example_func.nii.gz
+        anat/
+        func_masks/          ← optional: <roi_name>_mask.nii.gz per region
 """
 from __future__ import annotations
 
@@ -35,41 +34,32 @@ class SubjectBuilder:
     High-level orchestrator that, given a subject's root directory,
     produces a fully populated :class:`Subject` object.
 
-    The subject directory is expected to follow the ds003927 flat layout
-    where each visibility state has its own pre-separated NIfTI and CSV:
-
-        <subject_root>/
-            wholebrain_conscious.nii.gz
-            wholebrain_conscious.csv
-            wholebrain_unconscious.nii.gz
-            wholebrain_unconscious.csv
-            mask.nii.gz
+    After all subjects are built, call ``register_rois_with_settings()``
+    so that downstream phases operate on the exact ROI set present in the
+    data rather than the static config list.
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._settings = settings
-        self._behavioral = BehavioralLoader(settings)
-        self._fmri = FMRILoader(settings)
-        self._roi_extractor = ROIExtractor(settings)
-        self._prefix: str = settings.nifti_prefix          # "wholebrain"
-        self._mask_fn: str = settings.mask_filename        # "mask.nii.gz"
-        self._states: list[str] = settings.visibility_states  # ["conscious","unconscious"]
+        self._settings       = settings
+        self._behavioral     = BehavioralLoader(settings)
+        self._fmri           = FMRILoader(settings)
+        self._roi_extractor  = ROIExtractor(settings)
+        self._prefix: str    = settings.nifti_prefix
+        self._mask_fn: str   = settings.mask_filename
+        self._states: list[str] = settings.visibility_states
+
+        # Accumulate all ROI keys seen across every subject × state
+        self._discovered_rois: set[str] = set()
 
     # ── Public API ───────────────────────────────────────────────────────────
 
     def build(self, subject_root: str | Path, subject_id: str) -> Subject:
-        """
-        Build and return a :class:`Subject` with both visibility states populated.
-
-        Expects the flat ds003927 derivative layout (see module docstring).
-        """
+        """Build and return a :class:`Subject` with both visibility states populated."""
         subject_root = Path(subject_root)
-        subject = Subject(subject_id=subject_id)
+        subject      = Subject(subject_id=subject_id)
 
-        # Single shared mask for all states
         mask_path = subject_root / self._mask_fn
         if not mask_path.exists():
-            # Fallback: search for any mask file
             candidates = list(subject_root.glob("mask*.nii*"))
             if not candidates:
                 raise FileNotFoundError(
@@ -85,60 +75,66 @@ class SubjectBuilder:
             nifti_path, csv_path = self._resolve_state_paths(subject_root, state)
 
             if nifti_path is None:
-                logger.warning("NIfTI not found for state='%s' in %s – skipping", state, subject_root)
+                logger.warning(
+                    "[%s] NIfTI not found for state='%s' – skipping", subject_id, state
+                )
                 continue
             if csv_path is None:
-                logger.warning("CSV not found for state='%s' in %s – skipping", state, subject_root)
+                logger.warning(
+                    "[%s] CSV not found for state='%s' – skipping", subject_id, state
+                )
                 continue
 
-            logger.info("[%s] Loading state='%s'  nifti=%s", subject_id, state, nifti_path.name)
-
-            # Track NIfTI paths on the Subject object
+            logger.info(
+                "[%s] Loading state='%s'  nifti=%s", subject_id, state, nifti_path.name
+            )
             subject.fmri_paths.append(nifti_path)
 
-            # Load events
             events_df = self._behavioral.load(csv_path)
 
-            # Extract volume indices from CSV (volume_interest column)
             vol_col = self._settings.data["stimuli_csv_col"]["volume"]
             volumes = events_df[vol_col].dropna().astype(int).tolist()
-
-            # Note! VolumeIndex==RowIndex, i.e. the CSV is already aligned to the NIfTI volumes.
             volumes = list(range(len(events_df)))
 
             logger.info(
                 "[%s] state='%s': Mapping %d CSV rows to %d BOLD volumes.",
-                subject_id, state, len(events_df), len(volumes)
+                subject_id, state, len(events_df), len(volumes),
             )
 
-            # Load BOLD and extract whole-brain patterns
-            bold = self._fmri.load_bold(nifti_path)
+            bold     = self._fmri.load_bold(nifti_path)
             patterns = self._fmri.extract_trial_patterns(bold, full_mask, volumes)
-            patterns = self._fmri.zscore_patterns(patterns)  # (n_trials, n_voxels)
+            patterns = self._fmri.zscore_patterns(patterns)
 
-            # Extract per-ROI patterns from whole-brain patterns.
             roi_dir = self._resolve_roi_dir(subject_root)
 
-            # Instead of using self._settings.roi_names, find what's actually there:
-            available_masks = [f.name.replace("_mask.nii.gz", "") for f in roi_dir.glob("*_mask.nii*")]
-            # Update the extractor's target list temporarily for this subject
+            # Discover what mask files actually exist for this subject
+            available_masks = [
+                f.name.replace("_mask.nii.gz", "").replace("_mask.nii", "")
+                for f in roi_dir.glob("*_mask.nii*")
+            ]
             self._roi_extractor._roi_names = available_masks
 
             roi_patterns = self._roi_extractor.extract_all_rois(
                 patterns, full_mask, roi_dir
             )
 
-            # --- IMPLEMENT WHOLE-BRAIN FALLBACK ---
-            if not roi_patterns:
-                logger.warning("[%s] No ROIs extracted. Defaulting to whole-brain pattern.", subject_id)
-                roi_patterns["wholebrain"] = patterns
-                # Dynamically register 'wholebrain' as a valid ROI for downstream phases
-                if "wholebrain" not in self._settings._raw["rois"]:
-                    self._settings._raw["rois"].append("wholebrain")
-            # --------------------------------------
+            # ── Whole-brain is always included ────────────────────────────
+            roi_patterns["wholebrain"] = patterns
+            self._discovered_rois.add("wholebrain")
 
-            # Build labels and stimulus names from behavioural CSV
-            labels = self._behavioral.extract_binary_labels(events_df)
+            if not available_masks:
+                logger.info(
+                    "[%s] No ROI mask files found in %s – running whole-brain only.",
+                    subject_id, roi_dir,
+                )
+            else:
+                logger.info(
+                    "[%s] Extracted %d region ROIs + wholebrain: %s",
+                    subject_id, len(roi_patterns) - 1, sorted(available_masks),
+                )
+                self._discovered_rois.update(roi_patterns.keys())
+
+            labels        = self._behavioral.extract_binary_labels(events_df)
             label_strings = events_df[
                 self._settings.data["stimuli_csv_col"]["category"]
             ].values
@@ -157,6 +153,21 @@ class SubjectBuilder:
         logger.info("Built %s", subject)
         return subject
 
+    def register_rois_with_settings(self) -> None:
+        """
+        Push all discovered ROI names into settings so that phases 3–6
+        iterate over the real ROI set rather than the static config list.
+
+        Call this once after all subjects have been built (i.e. from
+        POCPipeline.load_subjects()).
+        """
+        self._settings.register_active_rois(sorted(self._discovered_rois))
+        logger.info(
+            "Registered %d active ROIs with settings: %s",
+            len(self._settings.active_roi_names),
+            self._settings.active_roi_names,
+        )
+
     # ── Private helpers ──────────────────────────────────────────────────────
 
     def _resolve_state_paths(
@@ -164,17 +175,8 @@ class SubjectBuilder:
         subject_root: Path,
         state: str,
     ) -> tuple[Path | None, Path | None]:
-        """
-        Resolve NIfTI and CSV paths for a given visibility state.
+        prefix = self._prefix
 
-        Tries the canonical naming convention first::
-            wholebrain_<state>.nii.gz  /  wholebrain_<state>.csv
-
-        Falls back to glob-based matching if that fails.
-        """
-        prefix = self._prefix  # "wholebrain"
-
-        # ── NIfTI ────────────────────────────────────────────────────────────
         nifti_path: Path | None = None
         for suffix in (".nii.gz", ".nii"):
             candidate = subject_root / f"{prefix}_{state}{suffix}"
@@ -182,30 +184,20 @@ class SubjectBuilder:
                 nifti_path = candidate
                 break
         if nifti_path is None:
-            # Glob fallback
-            hits = list(subject_root.glob(f"*{state}*.nii*"))
+            hits       = list(subject_root.glob(f"*{state}*.nii*"))
             nifti_path = hits[0] if hits else None
 
-        # ── CSV ──────────────────────────────────────────────────────────────
         csv_path: Path | None = None
         candidate_csv = subject_root / f"{prefix}_{state}.csv"
         if candidate_csv.exists():
             csv_path = candidate_csv
         else:
-            hits = list(subject_root.glob(f"*{state}*.csv"))
+            hits     = list(subject_root.glob(f"*{state}*.csv"))
             csv_path = hits[0] if hits else None
 
         return nifti_path, csv_path
 
     def _resolve_roi_dir(self, subject_root: Path) -> Path:
-        """
-        Return the directory where ROI masks are stored.
-
-        Preference order:
-        1. <subject_root>/rois/
-        2. <subject_root>/   (flat layout — ROI masks alongside data files)
-        3. <data_root>/rois/ (dataset-level shared masks)
-        """
         rois_subdir = subject_root / "func_masks"
         if rois_subdir.exists():
             return rois_subdir

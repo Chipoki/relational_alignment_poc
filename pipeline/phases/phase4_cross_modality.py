@@ -19,15 +19,12 @@ def run(
     rsa_analyzer: RSAAnalyzer,
     gw_aligner: GromovWassersteinAligner,
 ) -> dict:
-    """FCNN (clear/chance) ↔ human (conscious/unconscious) alignment."""
     logger.info("=" * 60)
     logger.info("PHASE 4 – 2×2 Cross-Modality Alignment")
     logger.info("=" * 60)
 
-    # Import here to avoid circular dependency at module level
-    from visualization.summary_plotter import SummaryPlotter
-    from visualization.transport_plotter import TransportPlotter
-    from config.settings import Settings as _S
+    from visualization.phase3_plotter import Phase3Plotter
+    p3 = Phase3Plotter(settings)
 
     summary: dict = {}
     alignment_pairs = [("clear", "conscious", "C-C"), ("chance", "unconscious", "U-U")]
@@ -38,7 +35,7 @@ def run(
             continue
 
         summary[label] = {}
-        for roi in settings.roi_names:
+        for roi in settings.active_roi_names:              # ← active_roi_names
             fcnn_rdm = fcnn_rdms[noise_state].get("fcnn_hidden")
             if fcnn_rdm is None:
                 continue
@@ -54,8 +51,8 @@ def run(
             rsa_results = rsa_analyzer.cross_modality_rsa(human, fcnn_rdm)
             mean_rho    = rsa_analyzer.mean_rho(rsa_results)
 
-            all_rdms = human + [fcnn_rdm]
-            ids      = [f"{r.subject_id}_{r.state}" for r in all_rdms]
+            all_rdms  = human + [fcnn_rdm]
+            ids       = [f"{r.subject_id}_{r.state}" for r in all_rdms]
             gw_matrix = gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
 
             fcnn_gw = [
@@ -68,18 +65,15 @@ def run(
             )
 
             summary[label][roi] = {
-                "mean_rsa_rho":           mean_rho,
+                "mean_rsa_rho":             mean_rho,
                 "mean_top_k_matching_rate": mean_top_k,
-                "n_rsa_significant":      sum(r.significant for r in rsa_results),
+                "n_rsa_significant":        sum(r.significant for r in rsa_results),
             }
             logger.info(
                 "  %s | ROI %s | RSA ρ=%.3f | Top-k rate=%.2f",
                 label, roi, mean_rho, mean_top_k,
             )
 
-            # ── GW heatmap per ROI per alignment label ────────────────────
-            from visualization.phase3_plotter import Phase3Plotter
-            p3 = Phase3Plotter(settings)
             gw_matrix.state        = f"{label}_{roi}"
             gw_matrix.roi_or_layer = roi
             p3.plot_gw_matrix(

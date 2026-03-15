@@ -25,30 +25,75 @@ class Settings:
         for key, value in raw.items():
             setattr(self, key, value)
 
-    # ── Convenience helpers ──────────────────────────────────────────────────
+        # Runtime-discovered ROIs (populated by SubjectBuilder after data loading).
+        # None means "not yet discovered" — phases must call active_roi_names.
+        self._active_roi_names: list[str] | None = None
+
+    # ── ROI helpers ──────────────────────────────────────────────────────────
 
     @property
     def roi_names(self) -> list[str]:
-        return self._raw["rois"]
+        """Static list from config.yaml. Includes 'wholebrain' always."""
+        static = list(self._raw["rois"])
+        if "wholebrain" not in static:
+            static = ["wholebrain"] + static
+        return static
+
+    @property
+    def active_roi_names(self) -> list[str]:
+        """
+        ROIs actually present in the loaded data.
+
+        Populated by SubjectBuilder.register_active_rois() after subjects are
+        loaded.  Falls back to roi_names if registration has not happened yet
+        (e.g. unit-tests or single-phase runs).
+        """
+        if self._active_roi_names is not None:
+            return self._active_roi_names
+        return self.roi_names
+
+    def register_active_rois(self, roi_names: list[str]) -> None:
+        """
+        Called by SubjectBuilder (or pipeline) once the actual ROI keys
+        present in human_rdms are known.
+
+        Rules
+        -----
+        * 'wholebrain' is always included (it is the whole-brain fallback).
+        * ROIs are de-duplicated while preserving the config.yaml order for
+          any ROIs that appear in both lists (config ROIs first, then any
+          extras discovered in the data).
+        """
+        ordered: list[str] = []
+        # Config order first, keeping only those that exist in data
+        for r in self.roi_names:
+            if r in roi_names:
+                ordered.append(r)
+        # Any extra ROIs discovered in data but not in config
+        for r in roi_names:
+            if r not in ordered:
+                ordered.append(r)
+        # wholebrain always present
+        if "wholebrain" not in ordered:
+            ordered.insert(0, "wholebrain")
+        self._active_roi_names = ordered
+
+    # ── Convenience helpers ──────────────────────────────────────────────────
 
     @property
     def visibility_states(self) -> list[str]:
-        """Visibility states included in analysis (e.g. conscious, unconscious)."""
         return self._raw["data"].get("visibility_states", ["conscious", "unconscious"])
 
     @property
     def nifti_prefix(self) -> str:
-        """Stem prefix for per-state NIfTI files, e.g. 'wholebrain'."""
         return self._raw["data"].get("nifti_prefix", "wholebrain")
 
     @property
     def mask_filename(self) -> str:
-        """Filename of the single whole-brain mask, e.g. 'mask.nii.gz'."""
         return self._raw["data"].get("mask_filename", "mask.nii.gz")
 
     @property
     def results_root(self) -> Path:
-        """Root output directory (results_dir)."""
         output_cfg = self._raw["output"]
         if "results_dir" in output_cfg:
             return Path(output_cfg["results_dir"])
@@ -57,15 +102,9 @@ class Settings:
 
     @property
     def output_parent_dir(self) -> Path:
-        """Parent directory for all pipeline outputs."""
         return Path(self._raw["output"].get("parent_dir", "results"))
 
     def _get_output_subdir(self, key: str, default_subdir: str) -> Path:
-        """
-        Get output subdirectory path.
-        If explicitly set in config, use that.
-        Otherwise, derive from parent_dir + default_subdir.
-        """
         output_cfg = self._raw["output"]
         if key in output_cfg:
             return Path(output_cfg[key])
@@ -74,44 +113,34 @@ class Settings:
 
     @property
     def results_dir(self) -> Path:
-        """Results root directory."""
         return self.results_root
 
     @property
     def rdm_dir(self) -> Path:
-        """RDM storage directory."""
         return self._get_output_subdir("rdm_dir", "rdms")
 
     @property
     def embedding_dir(self) -> Path:
-        """Embedding storage directory."""
         return self._get_output_subdir("embedding_dir", "embeddings")
 
     @property
     def stats_dir(self) -> Path:
-        """Statistics output directory."""
         return self._get_output_subdir("stats_dir", "stats")
 
     @property
     def visualization_dir(self) -> Path:
-        """Visualization output directory."""
-        viz_cfg = self._raw["visualization"]
-        viz_dir = viz_cfg.get("output_dir", "figures")
-        # If it's an absolute or already contains parent path, use as-is
+        viz_cfg  = self._raw["visualization"]
+        viz_dir  = viz_cfg.get("output_dir", "figures")
         viz_path = Path(viz_dir)
         if viz_path.is_absolute() or str(viz_path).startswith("results"):
             return viz_path
-        # Otherwise, place it under the output parent directory
         return self.output_parent_dir / viz_dir
 
     @property
     def log_dir(self) -> Path:
-        """Logging directory."""
         return self.output_parent_dir / "logs"
 
     def ensure_output_dirs(self) -> None:
-        """Create all necessary output directories."""
-        # Create parent and all subdirectories
         for path in [
             self.results_root,
             self.rdm_dir,
@@ -122,7 +151,7 @@ class Settings:
         ]:
             path.mkdir(parents=True, exist_ok=True)
 
-    # ── Singleton factory (optional convenience) ────────────────────────────
+    # ── Singleton factory ────────────────────────────────────────────────────
 
     @classmethod
     def get(cls, config_path: str | Path | None = None) -> "Settings":

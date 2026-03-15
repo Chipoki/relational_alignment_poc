@@ -18,18 +18,17 @@ def run(
     meta_mds_plotter: MetaMDSPlotter,
     settings: Settings | None = None,
 ) -> None:
-    """Build a 2-D Meta-MDS map of GWD distances for every ROI."""
     logger.info("=" * 60)
     logger.info("PHASE 6 – Relational Visualizations (Meta-MDS)")
     logger.info("=" * 60)
 
-    # Collect all available ROIs from the first subject that has data
     sid0   = subjects[0].subject_id if subjects else None
     c_rois = list(human_rdms.get(sid0, {}).get("conscious", {}).keys()) if sid0 else []
 
-    # Honour settings.roi_names order when available, else use what exists
+    # Use active_roi_names to respect config order; fall back to whatever is
+    # in the data if settings is not available.
     if settings is not None:
-        all_rois = [r for r in settings.roi_names if r in c_rois]
+        all_rois = [r for r in settings.active_roi_names if r in c_rois]  # ← active_roi_names
     else:
         all_rois = c_rois
 
