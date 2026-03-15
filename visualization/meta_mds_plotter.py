@@ -14,13 +14,18 @@ from config.settings import Settings
 class MetaMDSPlotter:
     """
     Produces a 2D MDS embedding of GW distances between all subjects
-    and FCNN states. Biologically plausible models cluster with humans.
+    and FCNN states.
     """
 
     def __init__(self, settings: Settings) -> None:
-        self._out_dir = Path(settings.visualization_dir)
+        self._base_dir = Path(settings.visualization_dir)
         self._dpi = settings.visualization.get("dpi", 150)
         self._n_components = settings.visualization.get("meta_mds_n_components", 2)
+
+    def _out_dir(self, subdir: str) -> Path:
+        p = self._base_dir / subdir
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -31,17 +36,9 @@ class MetaMDSPlotter:
         model_ids: list[str],
         title: str | None = None,
         save_name: str | None = None,
+        subdir: str = "phase6_meta_mds",
         show: bool = False,
     ) -> plt.Figure:
-        """
-        Embed the GW distance matrix with MDS and plot.
-
-        Parameters
-        ----------
-        gw_matrix  : pairwise GWD matrix (humans + models)
-        human_ids  : which labels correspond to human subjects
-        model_ids  : which labels correspond to FCNN states
-        """
         from sklearn.manifold import MDS
 
         mds = MDS(
@@ -50,7 +47,7 @@ class MetaMDSPlotter:
             random_state=42,
             normalized_stress=False,
         )
-        coords = mds.fit_transform(gw_matrix.matrix)   # (N, 2)
+        coords = mds.fit_transform(gw_matrix.matrix)
 
         fig, ax = plt.subplots(figsize=(7, 6))
 
@@ -58,12 +55,13 @@ class MetaMDSPlotter:
         model_color = "#EE854A"
 
         for idx, label in enumerate(gw_matrix.labels):
-            color = human_color if label in human_ids else model_color
-            marker = "o" if label in human_ids else "^"
-            ax.scatter(coords[idx, 0], coords[idx, 1], c=color, marker=marker, s=90, zorder=3)
+            color  = human_color if label in human_ids else model_color
+            marker = "o"         if label in human_ids else "^"
+            ax.scatter(coords[idx, 0], coords[idx, 1],
+                       c=color, marker=marker, s=90, zorder=3)
             ax.annotate(
                 label, (coords[idx, 0], coords[idx, 1]),
-                textcoords="offset points", xytext=(5, 3), fontsize=7, alpha=0.8
+                textcoords="offset points", xytext=(5, 3), fontsize=7, alpha=0.8,
             )
 
         legend_handles = [
@@ -73,13 +71,16 @@ class MetaMDSPlotter:
         ax.legend(handles=legend_handles, fontsize=9)
         ax.set_xlabel("MDS Dimension 1")
         ax.set_ylabel("MDS Dimension 2")
-        _title = title or f"Meta-MDS of GW Distances | {gw_matrix.roi_or_layer} | {gw_matrix.state}"
+        _title = title or (
+            f"Meta-MDS of GW Distances | {gw_matrix.roi_or_layer} | {gw_matrix.state}"
+        )
         ax.set_title(_title, fontsize=10)
         ax.grid(True, alpha=0.3)
         plt.tight_layout()
 
         if save_name:
-            fig.savefig(self._out_dir / save_name, dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight")
         if show:
             plt.show()
+        plt.close(fig)
         return fig

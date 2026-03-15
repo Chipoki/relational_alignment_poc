@@ -43,7 +43,7 @@ def run(
     ensure_dir(rdm_dir)
 
     human_rdms: dict = {}
-    fcnn_rdms: dict = {}
+    fcnn_rdms:  dict = {}
 
     # ── Common stimuli per state ──────────────────────────────────────────
     common_stims_by_state: dict[str, list] = {}
@@ -59,7 +59,7 @@ def run(
     for subj in subjects:
         human_rdms[subj.subject_id] = {}
         for state in ("conscious", "unconscious"):
-            vis_data = getattr(subj, state, None)
+            vis_data     = getattr(subj, state, None)
             common_stims = common_stims_by_state.get(state, [])
 
             if vis_data is None or not common_stims:
@@ -69,10 +69,10 @@ def run(
                 )
                 continue
 
-            stim_to_label = dict(zip(vis_data.stimulus_names, vis_data.labels))
-            sorted_stims = sorted(common_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
+            stim_to_label  = dict(zip(vis_data.stimulus_names, vis_data.labels))
+            sorted_stims   = sorted(common_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
             aligned_labels = np.array([stim_to_label[s] for s in sorted_stims])
-            aligned_stim_names = np.array(sorted_stims)
+            aligned_names  = np.array(sorted_stims)
 
             roi_averaged: dict = {roi: [] for roi in vis_data.bold_patterns}
             for stim in sorted_stims:
@@ -80,15 +80,14 @@ def run(
                 for roi, patterns in vis_data.bold_patterns.items():
                     roi_averaged[roi].append(patterns[idx].mean(axis=0))
 
-            # Sanitize: NaNs + zero-variance voxels
             for roi in roi_averaged:
-                arr = np.nan_to_num(np.array(roi_averaged[roi]), nan=0.0)
+                arr   = np.nan_to_num(np.array(roi_averaged[roi]), nan=0.0)
                 valid = np.var(arr, axis=0) > 1e-8
                 roi_averaged[roi] = arr[:, valid] if valid.sum() > 0 else arr
 
             state_rdms = rdm_builder.build_from_embeddings(
                 embeddings=roi_averaged,
-                stimulus_names=aligned_stim_names,
+                stimulus_names=aligned_names,
                 labels=aligned_labels,
                 subject_id=subj.subject_id,
                 state=state,
@@ -103,11 +102,9 @@ def run(
     human_state_map = {"clear": "conscious", "chance": "unconscious"}
 
     for noise_state, store_key in [("clear", "fcnn_clear"), ("chance", "fcnn_chance")]:
-        names_key = f"{store_key}_names"
-        # Single-file cache path – uses RDMBuilder.save/load format
+        names_key      = f"{store_key}_names"
         rdm_cache_path = rdm_dir / f"fcnn_rdm_{noise_state}.npy"
 
-        # ── Load from disk if already built ──────────────────────────────
         if rdm_cache_path.exists():
             logger.info("Cached FCNN RDM found for '%s' – loading from disk.", noise_state)
             fcnn_rdm = RDMBuilder.load(str(rdm_cache_path))
@@ -118,11 +115,11 @@ def run(
             logger.info("FCNN embeddings not found for '%s' – skipping.", noise_state)
             continue
 
-        fcnn_emb = embedding_store.load(store_key)
+        fcnn_emb   = embedding_store.load(store_key)
         fcnn_names = embedding_store.load(names_key)
 
         human_state = human_state_map[noise_state]
-        ref_stims = common_stims_by_state.get(human_state, [])
+        ref_stims   = common_stims_by_state.get(human_state, [])
         if not ref_stims:
             logger.warning("No common stimuli for human state '%s'.", human_state)
             continue
@@ -134,7 +131,7 @@ def run(
         if vis_data is None:
             continue
 
-        stim_to_label = dict(zip(vis_data.stimulus_names, vis_data.labels))
+        stim_to_label    = dict(zip(vis_data.stimulus_names, vis_data.labels))
         sorted_ref_stims = sorted(ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
         stim_to_fcnn_idx = {_normalize_name(n): i for i, n in enumerate(fcnn_names)}
 
@@ -159,8 +156,6 @@ def run(
             state=noise_state,
         )
         fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
-
-        # ── Save in real-time using RDMBuilder.save (single-file format) ─
         RDMBuilder.save(fcnn_rdm, str(rdm_cache_path))
         logger.info(
             "Built and saved FCNN RDM for noise_state=%s (n_stimuli=%d) → %s",
@@ -168,35 +163,42 @@ def run(
         )
 
     # ── FCNN Dual-State RDM Figure ────────────────────────────────────────
-    fcnn_clear_rdm = fcnn_rdms.get("clear", {}).get("fcnn_hidden")
+    fcnn_clear_rdm  = fcnn_rdms.get("clear",  {}).get("fcnn_hidden")
     fcnn_chance_rdm = fcnn_rdms.get("chance", {}).get("fcnn_hidden")
     if fcnn_clear_rdm is not None and fcnn_chance_rdm is not None:
         rdm_plotter.plot_dual_state_fcnn(
             rdm_clear=fcnn_clear_rdm,
             rdm_noisy=fcnn_chance_rdm,
             save_name="rdm_dual_fcnn.png",
+            subdir="phase2_rdms",
         )
-        logger.info("Saved FCNN dual-state RDM figure → rdm_dual_fcnn.png")
+        logger.info("Saved FCNN dual-state RDM figure.")
 
-    # ── Human Dual-State RDM Figures (per subject) ───────────────────────
+    # ── Human Dual-State RDM Figures – every subject × every ROI ─────────
     for subj in subjects:
-        sid = subj.subject_id
-        c_rois = list(human_rdms.get(sid, {}).get("conscious", {}).keys())
-        if not c_rois:
-            continue
-        example_roi = "fusiform" if "fusiform" in c_rois else c_rois[0]
-        c_rdm = human_rdms.get(sid, {}).get("conscious", {}).get(example_roi)
-        u_rdm = human_rdms.get(sid, {}).get("unconscious", {}).get(example_roi)
-        if c_rdm and u_rdm:
+        sid   = subj.subject_id
+        c_rdms = human_rdms.get(sid, {}).get("conscious",   {})
+        u_rdms = human_rdms.get(sid, {}).get("unconscious", {})
+
+        all_rois = sorted(set(c_rdms.keys()) | set(u_rdms.keys()))
+        for roi in all_rois:
+            c_rdm = c_rdms.get(roi)
+            u_rdm = u_rdms.get(roi)
+            if c_rdm is None or u_rdm is None:
+                continue
             rdm_plotter.plot_dual_state(
                 c_rdm, u_rdm,
                 suptitle=(
                     f"Subject {sid}  ·  Representational Dissimilarity Matrix\n"
-                    f"{example_roi.replace('_', ' ').title()}  (Conscious | Unconscious)"
+                    f"{roi.replace('_', ' ').title()}  (Conscious | Unconscious)"
                 ),
-                save_name=f"rdm_dual_{sid}_{example_roi}.png",
+                save_name=f"rdm_dual_{sid}_{roi}.png",
+                subdir=f"phase2_rdms/{roi}",
             )
-            logger.info("Saved dual-state RDM plot for %s / %s", sid, example_roi)
+        if all_rois:
+            logger.info(
+                "Saved dual-state RDM plots for %s across %d ROIs.", sid, len(all_rois)
+            )
 
     logger.info("Phase 2 complete.\n")
     return human_rdms, fcnn_rdms

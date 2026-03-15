@@ -126,6 +126,44 @@ runs in whole-brain mode and ROI extraction is skipped with a warning.
 The event CSVs must follow the PsychoPy schema:
 `onset, duration, labels, targets, visibility, volume_interest, session, run, id, ...`
 
+After running the full pipeline the figures/ folder will be structured as:
+```
+figures/
+├── phase2_rdms/
+│   ├── rdm_dual_fcnn.png
+│   ├── pericalcarine/
+│   │   ├── rdm_dual_sub-01_pericalcarine.png
+│   │   └── ...
+│   ├── fusiform/
+│   └── ... (one subfolder per ROI)
+├── phase3_rsa/
+│   ├── phase3_rsa_by_roi.png
+│   ├── phase3_rho_violins.png
+│   ├── phase3_rho_vs_pvalue.png
+│   ├── phase3_noise_ceiling_bars.png
+│   ├── pericalcarine/
+│   │   ├── phase3_2nd_order_rdm_pericalcarine_conscious.png
+│   │   └── phase3_2nd_order_rdm_pericalcarine_unconscious.png
+│   └── ... (one subfolder per ROI)
+├── phase3_gw/
+│   ├── pericalcarine/
+│   │   ├── phase3_gw_matrix_pericalcarine_conscious_x_conscious.png
+│   │   ├── phase3_gw_matrix_pericalcarine_unconscious_x_unconscious.png
+│   │   └── phase3_gw_matrix_pericalcarine_conscious_vs_unconscious.png
+│   └── ... (one subfolder per ROI)
+├── phase4_cross_modality/
+│   ├── pericalcarine/
+│   │   ├── phase4_gw_matrix_pericalcarine_C-C.png
+│   │   └── phase4_gw_matrix_pericalcarine_U-U.png
+│   └── ... (one subfolder per ROI)
+├── phase5_invariance/
+│   └── phase5_structural_invariance.png
+└── phase6_meta_mds/
+    ├── pericalcarine/
+    │   └── phase6_meta_mds_pericalcarine.png
+    └── ... (one subfolder per ROI)
+```
+
 ---
 
 ## Running the Pipeline

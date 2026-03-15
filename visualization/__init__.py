@@ -5,6 +5,6 @@ from .summary_plotter import SummaryPlotter
 from .phase3_plotter import Phase3Plotter
 
 __all__ = [
-    "RDMPlotter", "MetaMDSPlotter", "TransportPlotter", "SummaryPlotter",
-    "Phase3Plotter",
+    "RDMPlotter", "MetaMDSPlotter", "TransportPlotter",
+    "SummaryPlotter", "Phase3Plotter",
 ]

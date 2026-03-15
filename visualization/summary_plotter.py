@@ -15,8 +15,13 @@ class SummaryPlotter:
     """Generates overview summary figures for RSA and GW results."""
 
     def __init__(self, settings: Settings) -> None:
-        self._out_dir = Path(settings.visualization_dir)
+        self._base_dir = Path(settings.visualization_dir)
         self._dpi = settings.visualization.get("dpi", 150)
+
+    def _out_dir(self, subdir: str) -> Path:
+        p = self._base_dir / subdir
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     # ── RSA bar plot ─────────────────────────────────────────────────────────
 
@@ -27,6 +32,7 @@ class SummaryPlotter:
         roi_names: list[str],
         title: str = "Inter-subject RSA by ROI",
         save_name: str | None = None,
+        subdir: str = "phase3_rsa",
         show: bool = False,
     ) -> plt.Figure:
         """
@@ -46,8 +52,8 @@ class SummaryPlotter:
         width = 0.38
 
         fig, ax = plt.subplots(figsize=(12, 4.5))
-        bars_c = ax.bar(x - width / 2, rho_c, width, label="Conscious", color="#4878D0", alpha=0.85)
-        bars_u = ax.bar(x + width / 2, rho_u, width, label="Unconscious", color="#EE854A", alpha=0.85)
+        ax.bar(x - width / 2, rho_c, width, label="Conscious",   color="#4878D0", alpha=0.85)
+        ax.bar(x + width / 2, rho_u, width, label="Unconscious", color="#EE854A", alpha=0.85)
 
         ax.set_xticks(x)
         ax.set_xticklabels(roi_names, rotation=35, ha="right", fontsize=8)
@@ -58,18 +64,20 @@ class SummaryPlotter:
         plt.tight_layout()
 
         if save_name:
-            fig.savefig(self._out_dir / save_name, dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight")
         if show:
             plt.show()
+        plt.close(fig)
         return fig
 
     # ── Structural invariance metric ─────────────────────────────────────────
 
     def plot_structural_invariance(
         self,
-        invariance_results: dict[str, dict],   # roi_name → metrics dict from Phase 5
+        invariance_results: dict[str, dict],
         roi_names: list[str],
         save_name: str | None = None,
+        subdir: str = "phase5_invariance",
         show: bool = False,
     ) -> plt.Figure:
         """Scatter: ΔGW_human vs ΔGW_FCNN per ROI."""
@@ -97,7 +105,8 @@ class SummaryPlotter:
         plt.tight_layout()
 
         if save_name:
-            fig.savefig(self._out_dir / save_name, dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight")
         if show:
             plt.show()
+        plt.close(fig)
         return fig

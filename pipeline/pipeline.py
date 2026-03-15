@@ -1,7 +1,4 @@
-"""pipeline/pipeline.py – POCPipeline: state container + orchestrator.
-
-Holds all shared components and delegates execution to the per-phase modules.
-"""
+"""pipeline/pipeline.py – POCPipeline: state container + orchestrator."""
 from __future__ import annotations
 
 import logging
@@ -44,38 +41,33 @@ class POCPipeline:
         self._cfg = settings
         settings.ensure_output_dirs()
 
-        # Components
-        self._subject_builder  = SubjectBuilder(settings)
-        self._fcnn_embedder    = FCNNEmbedder(settings)
-        self._fmri_embedder    = FMRIEmbedder(settings)
-        self._embedding_store  = EmbeddingStore(settings.embedding_dir)
-        self._rdm_builder      = RDMBuilder()
-        self._rsa_analyzer     = RSAAnalyzer(settings)
-        self._noise_ceiling    = NoiseCeiling()
-        self._gw_aligner       = GromovWassersteinAligner(settings)
+        self._subject_builder   = SubjectBuilder(settings)
+        self._fcnn_embedder     = FCNNEmbedder(settings)
+        self._fmri_embedder     = FMRIEmbedder(settings)
+        self._embedding_store   = EmbeddingStore(settings.embedding_dir)
+        self._rdm_builder       = RDMBuilder()
+        self._rsa_analyzer      = RSAAnalyzer(settings)
+        self._noise_ceiling     = NoiseCeiling()
+        self._gw_aligner        = GromovWassersteinAligner(settings)
 
-        # Visualisers
-        self._rdm_plotter      = RDMPlotter(settings)
-        self._meta_mds_plotter = MetaMDSPlotter(settings)
-        self._transport_plotter= TransportPlotter(settings)
-        self._summary_plotter  = SummaryPlotter(settings)
+        self._rdm_plotter       = RDMPlotter(settings)
+        self._meta_mds_plotter  = MetaMDSPlotter(settings)
+        self._transport_plotter = TransportPlotter(settings)
+        self._summary_plotter   = SummaryPlotter(settings)
 
-        # Progressive state
-        self._subjects:   list  = []
-        self._human_rdms: dict  = {}   # subject_id → state → roi → RDM
-        self._fcnn_rdms:  dict  = {}   # noise_state → roi → RDM
+        self._subjects:   list = []
+        self._human_rdms: dict = {}
+        self._fcnn_rdms:  dict = {}
 
     # ── Subject loading ──────────────────────────────────────────────────────
 
     def load_subjects(self, subject_ids: list[str] | None = None) -> None:
-        """Discover and load all subjects from the data root directory."""
         root = Path(self._cfg.data["root"])
         if not root.exists():
             raise FileNotFoundError(
                 f"Data root not found: {root}\n"
                 "Please set data.root in config/config.yaml."
             )
-
         ids = subject_ids or self._cfg.data.get("subject_ids") or []
         if not ids:
             ids = sorted(p.name for p in root.iterdir() if p.is_dir())
@@ -130,6 +122,7 @@ class POCPipeline:
         phase6_visualize.run(
             self._subjects, self._human_rdms, self._fcnn_rdms,
             self._gw_aligner, self._meta_mds_plotter,
+            settings=self._cfg,          # ← new: needed for roi_names ordering
         )
 
     # ── Full pipeline ────────────────────────────────────────────────────────

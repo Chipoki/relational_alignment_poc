@@ -15,8 +15,13 @@ class RDMPlotter:
     """Generates RDM heatmaps with category-sorted stimulus ordering."""
 
     def __init__(self, settings: Settings) -> None:
-        self._out_dir = Path(settings.visualization_dir)
+        self._base_dir = Path(settings.visualization_dir)
         self._dpi = settings.visualization.get("dpi", 150)
+
+    def _out_dir(self, subdir: str) -> Path:
+        p = self._base_dir / subdir
+        p.mkdir(parents=True, exist_ok=True)
+        return p
 
     # ── Public API ───────────────────────────────────────────────────────────
 
@@ -25,6 +30,7 @@ class RDMPlotter:
         rdm: RDM,
         title: str | None = None,
         save_name: str | None = None,
+        subdir: str = "phase2_rdms",
         show: bool = False,
     ) -> plt.Figure:
         """Plot a single RDM heatmap sorted by category."""
@@ -42,7 +48,10 @@ class RDMPlotter:
         ax.axvline(n_living - 0.5, color="black", lw=1.5)
         ax.set_xlabel("Stimuli (Living → Non-living)")
         ax.set_ylabel("Stimuli (Living → Non-living)")
-        ax.set_title(title or f"{rdm.subject_id} | {rdm.state} | {rdm.roi_or_layer}", fontsize=10, pad=8)
+        ax.set_title(
+            title or f"{rdm.subject_id} | {rdm.state} | {rdm.roi_or_layer}",
+            fontsize=10, pad=8,
+        )
         patches = [
             mpatches.Patch(color="none", label=f"Living (n={n_living})"),
             mpatches.Patch(color="none", label=f"Non-living (n={n_total - n_living})"),
@@ -50,9 +59,10 @@ class RDMPlotter:
         ax.legend(handles=patches, loc="lower right", fontsize=7, framealpha=0.7)
         plt.tight_layout()
         if save_name:
-            fig.savefig(self._out_dir / save_name, dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight")
         if show:
             plt.show()
+        plt.close(fig)
         return fig
 
     def plot_dual_state(
@@ -61,6 +71,7 @@ class RDMPlotter:
         rdm_unconscious: RDM,
         suptitle: str | None = None,
         save_name: str | None = None,
+        subdir: str = "phase2_rdms",
         show: bool = False,
     ) -> plt.Figure:
         """Plot conscious and unconscious human RDMs side by side."""
@@ -71,6 +82,7 @@ class RDMPlotter:
             label_right="Unconscious",
             suptitle=suptitle,
             save_name=save_name,
+            subdir=subdir,
             show=show,
         )
 
@@ -80,6 +92,7 @@ class RDMPlotter:
         rdm_noisy: RDM,
         suptitle: str | None = None,
         save_name: str | None = None,
+        subdir: str = "phase2_rdms",
         show: bool = False,
     ) -> plt.Figure:
         """Plot FCNN clear (0-noise) and noisy (chance-level) RDMs side by side."""
@@ -90,6 +103,7 @@ class RDMPlotter:
             label_right="Noisy (chance-level)",
             suptitle=suptitle or "FCNN  ·  Representational Dissimilarity Matrix\n(Clear | Noisy)",
             save_name=save_name,
+            subdir=subdir,
             show=show,
         )
 
@@ -103,6 +117,7 @@ class RDMPlotter:
         label_right: str,
         suptitle: str | None,
         save_name: str | None,
+        subdir: str,
         show: bool,
     ) -> plt.Figure:
         """Shared implementation for any side-by-side dual RDM figure."""
@@ -128,7 +143,8 @@ class RDMPlotter:
 
         plt.tight_layout()
         if save_name:
-            fig.savefig(self._out_dir / save_name, dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight")
         if show:
             plt.show()
+        plt.close(fig)
         return fig

@@ -47,7 +47,9 @@ def run(
         if not c_rdms or not u_rdms or fcnn_clear is None or fcnn_noisy is None:
             continue
 
-        metrics = gw_aligner.structural_invariance_metric(c_rdms, u_rdms, fcnn_clear, fcnn_noisy)
+        metrics = gw_aligner.structural_invariance_metric(
+            c_rdms, u_rdms, fcnn_clear, fcnn_noisy
+        )
         summary[roi] = metrics
         logger.info(
             "  ROI %s | ΔGW_human=%.4f ± %.4f | ΔGW_FCNN=%.4f | Bioplausible=%s",
@@ -60,12 +62,14 @@ def run(
 
     save_json(summary, Path(settings.stats_dir) / "phase5_structural_invariance.json")
 
+    # ── Combined scatter across all ROIs ──────────────────────────────────
     if summary:
         summary_plotter.plot_structural_invariance(
             summary, settings.roi_names,
             save_name="phase5_structural_invariance.png",
+            subdir="phase5_invariance",
         )
-        logger.info("Saved structural invariance scatter.")
+        logger.info("Saved structural invariance scatter (all ROIs).")
 
     logger.info("Phase 5 complete.\n")
     return summary

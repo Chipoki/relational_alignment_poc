@@ -206,7 +206,7 @@ class SubjectBuilder:
         2. <subject_root>/   (flat layout — ROI masks alongside data files)
         3. <data_root>/rois/ (dataset-level shared masks)
         """
-        rois_subdir = subject_root / "rois"
+        rois_subdir = subject_root / "func_masks"
         if rois_subdir.exists():
             return rois_subdir
         return subject_root
