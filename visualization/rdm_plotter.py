@@ -157,7 +157,10 @@ class RDMPlotter:
             ],
             loc="lower right", fontsize=7, framealpha=0.7,
         )
+        sorted_labels = rdm.labels[sort_idx]
+        self._draw_animacy_sidebar(ax, sorted_labels, side="right")
         plt.tight_layout()
+
         if save_name:
             fig.savefig(
                 self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
@@ -179,8 +182,8 @@ class RDMPlotter:
         common_order: np.ndarray | None = None,
         best_k: int | None = None,
         best_score: float | None = None,
-        k_min: int = 3,
-        k_max: int = 40,
+        k_min: int = 2,
+        k_max: int = 8,
     ) -> plt.Figure:
         """
         Plot a cluster-sorted RDM with Ward/silhouette boundary lines.
@@ -228,7 +231,10 @@ class RDMPlotter:
             f"({order_src})",
             fontsize=9, pad=8,
         )
+        sorted_labels = rdm.labels[order]
+        self._draw_animacy_sidebar(ax, sorted_labels, side="right")
         plt.tight_layout()
+
         if save_name:
             fig.savefig(
                 self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
@@ -389,3 +395,26 @@ class RDMPlotter:
             plt.show()
         plt.close(fig)
         return fig
+
+    @staticmethod
+    def _draw_animacy_sidebar(
+        ax: plt.Axes,
+        sorted_labels: np.ndarray,
+        side: str = "right",
+        bar_width: str = "2%",
+        bar_pad: str = "1%",
+    ) -> None:
+        """Append a thin binary sidebar to `ax` (black=animate, white=inanimate)."""
+        from mpl_toolkits.axes_grid1 import make_axes_locatable
+        sidebar_img = np.where(sorted_labels[:, None] == 1, 0.0, 1.0)
+        divider = make_axes_locatable(ax)
+        sidebar_ax = divider.append_axes(side, size=bar_width, pad=bar_pad)
+        sidebar_ax.imshow(
+            sidebar_img, cmap="gray", vmin=0.0, vmax=1.0,
+            aspect="auto", interpolation="nearest",
+        )
+        sidebar_ax.set_xticks([])
+        sidebar_ax.set_yticks([])
+        sidebar_ax.set_xlabel("A/I", fontsize=6, labelpad=2)
+
+
