@@ -4,17 +4,20 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
 from analysis.rsa.rdm import RDMBuilder, RDM
-from analysis.rsa.rdm_utils import mean_rdm as compute_mean_rdm
+from analysis.rsa.rdm_utils import aggregate_rdm
 from config.settings import Settings
 from embeddings.embedding_store import EmbeddingStore
 from utils.io_utils import ensure_dir
 from visualization.rdm_plotter import RDMPlotter
 
 logger = logging.getLogger(__name__)
+
+_AGG_METHODS: tuple[Literal["mean", "median"], ...] = ("mean", "median")
 
 
 def _normalize_name(s: str) -> str:
@@ -34,6 +37,7 @@ def run(
     Returns
     -------
     human_rdms : dict  – subject_id → state → roi → RDM
+                         plus '_agg_rdms' → method → state → roi → RDM
     fcnn_rdms  : dict  – noise_state → roi → RDM
     """
     logger.info("=" * 60)
@@ -177,7 +181,7 @@ def run(
 
     # ── Human Dual-State RDM Figures – every subject × every ROI ─────────
     for subj in subjects:
-        sid   = subj.subject_id
+        sid    = subj.subject_id
         c_rdms = human_rdms.get(sid, {}).get("conscious",   {})
         u_rdms = human_rdms.get(sid, {}).get("unconscious", {})
 
@@ -201,61 +205,93 @@ def run(
                 "Saved dual-state RDM plots for %s across %d ROIs.", sid, len(all_rois)
             )
 
-    # ── Mean RDMs per ROI per state + sorted RDM figures ─────────────────
-
-    mean_rdms: dict[str, dict[str, RDM]] = {}  # state → roi → mean RDM
+    # ── Aggregate RDMs (mean + median) per ROI per state ─────────────────
+    # Structure: method → state → roi → RDM
+    agg_rdms: dict[str, dict[str, dict[str, RDM]]] = {
+        m: {s: {} for s in ("conscious", "unconscious")}
+        for m in _AGG_METHODS
+    }
 
     for state in ("conscious", "unconscious"):
-        mean_rdms[state] = {}
         all_rois = sorted({
             roi
             for sid in human_rdms
-            if state in human_rdms[sid]
+            if isinstance(human_rdms[sid], dict) and state in human_rdms[sid]
             for roi in human_rdms[sid][state]
         })
+
         for roi in all_rois:
             roi_rdm_list = [
                 human_rdms[sid][state][roi]
                 for sid in human_rdms
-                if state in human_rdms[sid] and roi in human_rdms[sid][state]
+                if isinstance(human_rdms[sid], dict)
+                and state in human_rdms[sid]
+                and roi in human_rdms[sid][state]
             ]
             if not roi_rdm_list:
                 continue
 
-            m_rdm = compute_mean_rdm(roi_rdm_list, roi_or_layer=roi, state=state)
-            mean_rdms[state][roi] = m_rdm
+            # Derive Ward sort once from the mean RDM — shared across all
+            # aggregation methods and individual subjects so figures are
+            # visually comparable (common stimulus ordering).
+            from analysis.rsa.rdm_utils import sorted_order
+            mean_matrix = np.stack(
+                [r.matrix for r in roi_rdm_list], axis=0
+            ).mean(axis=0)
+            common_order, best_k, best_score = sorted_order(mean_matrix)
 
-            # Plot mean RDM
-            rdm_plotter.plot_mean_rdm(
-                m_rdm,
-                save_name=f"rdm_mean_{state}_{roi}.png",
-                subdir=f"phase2_rdms/mean/{roi}",
-            )
+            for method in _AGG_METHODS:
+                agg = aggregate_rdm(
+                    roi_rdm_list,
+                    roi_or_layer=roi,
+                    state=state,
+                    method=method,
+                )
+                agg_rdms[method][state][roi] = agg
 
-            # Plot sorted RDM for the mean
-            rdm_plotter.plot_sorted_rdm(
-                m_rdm,
-                title_prefix=f"Mean  ·  {state.title()}  ·  ",
-                save_name=f"rdm_sorted_mean_{state}_{roi}.png",
-                subdir=f"phase2_rdms/sorted/{roi}",
-            )
+                # Plain (category-sorted) aggregate figure
+                rdm_plotter.plot_mean_rdm(
+                    agg,
+                    save_name=f"rdm_{method}_{state}_{roi}.png",
+                    subdir=f"phase2_rdms/{method}/{roi}",
+                )
 
-            # Plot sorted RDM for each individual subject
-            for rdm_subj in roi_rdm_list:
+                # Cluster-sorted aggregate figure  (using shared common_order)
                 rdm_plotter.plot_sorted_rdm(
-                    rdm_subj,
-                    title_prefix=f"{rdm_subj.subject_id}  ·  {state.title()}  ·  ",
-                    save_name=f"rdm_sorted_{rdm_subj.subject_id}_{state}_{roi}.png",
+                    agg,
+                    common_order=common_order,
+                    best_k=best_k,
+                    best_score=best_score,
+                    title_prefix=f"{method.title()}  ·  {state.title()}  ·  ",
+                    save_name=f"rdm_sorted_{method}_{state}_{roi}.png",
                     subdir=f"phase2_rdms/sorted/{roi}",
                 )
 
-        logger.info("Mean & sorted RDM figures saved for state=%s (%d ROIs).",
-                    state, len(mean_rdms[state]))
+            # Cluster-sorted figures for individual subjects  (same common_order)
+            for rdm_subj in roi_rdm_list:
+                rdm_plotter.plot_sorted_rdm(
+                    rdm_subj,
+                    common_order=common_order,
+                    best_k=best_k,
+                    best_score=best_score,
+                    title_prefix=f"{rdm_subj.subject_id}  ·  {state.title()}  ·  ",
+                    save_name=(
+                        f"rdm_sorted_{rdm_subj.subject_id}_{state}_{roi}.png"
+                    ),
+                    subdir=f"phase2_rdms/sorted/{roi}",
+                )
 
-    # Attach mean_rdms to the return so downstream phases can use it
-    # We smuggle it via a lightweight attribute on the dict
-    human_rdms["_mean_rdms"] = mean_rdms  # key prefixed with _ for easy filtering
+        logger.info(
+            "Aggregate (mean+median) & sorted RDM figures saved for "
+            "state=%s (%d ROIs).",
+            state, len(all_rois),
+        )
+
+    # Attach aggregate RDMs so downstream phases (4, 7) can consume them.
+    # Prefixed key keeps iteration over subject IDs clean.
+    human_rdms["_agg_rdms"] = agg_rdms
+    # Legacy alias so any code that referenced '_mean_rdms' keeps working.
+    human_rdms["_mean_rdms"] = agg_rdms["mean"]
 
     logger.info("Phase 2 complete.\n")
-
     return human_rdms, fcnn_rdms
