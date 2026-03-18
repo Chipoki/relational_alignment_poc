@@ -9,7 +9,7 @@ from typing import Literal
 import numpy as np
 
 from analysis.rsa.rdm import RDMBuilder, RDM
-from analysis.rsa.rdm_utils import aggregate_rdm
+from analysis.rsa.rdm_utils import aggregate_rdm, gw_consensus_matrix, sorted_order
 from config.settings import Settings
 from embeddings.embedding_store import EmbeddingStore
 from utils.io_utils import ensure_dir
@@ -37,7 +37,8 @@ def run(
     Returns
     -------
     human_rdms : dict  – subject_id → state → roi → RDM
-                         plus '_agg_rdms' → method → state → roi → RDM
+                         '_agg_rdms' → method → state → roi → RDM
+                         '_mean_rdms' → state → roi → RDM  (legacy alias)
     fcnn_rdms  : dict  – noise_state → roi → RDM
     """
     logger.info("=" * 60)
@@ -58,7 +59,9 @@ def run(
             for subj in subjects
             if getattr(subj, state, None) is not None
         ]
-        common_stims_by_state[state] = list(set.intersection(*name_sets)) if name_sets else []
+        common_stims_by_state[state] = (
+            list(set.intersection(*name_sets)) if name_sets else []
+        )
 
     # ── Human RDMs ────────────────────────────────────────────────────────
     for subj in subjects:
@@ -75,7 +78,9 @@ def run(
                 continue
 
             stim_to_label  = dict(zip(vis_data.stimulus_names, vis_data.labels))
-            sorted_stims   = sorted(common_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
+            sorted_stims   = sorted(
+                common_stims, key=lambda x: (-stim_to_label.get(x, 0), x)
+            )
             aligned_labels = np.array([stim_to_label[s] for s in sorted_stims])
             aligned_names  = np.array(sorted_stims)
 
@@ -103,7 +108,7 @@ def run(
                 len(state_rdms), subj.subject_id, state, len(sorted_stims),
             )
 
-    # ── FCNN RDMs ─────────────────────────────────────────────────────────
+    # ── FCNN RDMs ────────────────────────────────────────────────────────
     human_state_map = {"clear": "conscious", "chance": "unconscious"}
 
     for noise_state, store_key in [("clear", "fcnn_clear"), ("chance", "fcnn_chance")]:
@@ -111,13 +116,17 @@ def run(
         rdm_cache_path = rdm_dir / f"fcnn_rdm_{noise_state}.npy"
 
         if rdm_cache_path.exists():
-            logger.info("Cached FCNN RDM found for '%s' – loading from disk.", noise_state)
+            logger.info(
+                "Cached FCNN RDM found for '%s' – loading from disk.", noise_state
+            )
             fcnn_rdm = RDMBuilder.load(str(rdm_cache_path))
             fcnn_rdms[noise_state] = {"fcnn_hidden": fcnn_rdm}
             continue
 
         if not embedding_store.exists(store_key) or not embedding_store.exists(names_key):
-            logger.info("FCNN embeddings not found for '%s' – skipping.", noise_state)
+            logger.info(
+                "FCNN embeddings not found for '%s' – skipping.", noise_state
+            )
             continue
 
         fcnn_emb   = embedding_store.load(store_key)
@@ -130,15 +139,20 @@ def run(
             continue
 
         vis_data = next(
-            (getattr(s, human_state) for s in subjects if getattr(s, human_state, None)),
+            (getattr(s, human_state) for s in subjects
+             if getattr(s, human_state, None)),
             None,
         )
         if vis_data is None:
             continue
 
         stim_to_label    = dict(zip(vis_data.stimulus_names, vis_data.labels))
-        sorted_ref_stims = sorted(ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x))
-        stim_to_fcnn_idx = {_normalize_name(n): i for i, n in enumerate(fcnn_names)}
+        sorted_ref_stims = sorted(
+            ref_stims, key=lambda x: (-stim_to_label.get(x, 0), x)
+        )
+        stim_to_fcnn_idx = {
+            _normalize_name(n): i for i, n in enumerate(fcnn_names)
+        }
 
         aligned_fcnn_emb, valid_labels, valid_stims = [], [], []
         for stim in sorted_ref_stims:
@@ -205,8 +219,20 @@ def run(
                 "Saved dual-state RDM plots for %s across %d ROIs.", sid, len(all_rois)
             )
 
-    # ── Aggregate RDMs (mean + median) per ROI per state ─────────────────
-    # Structure: method → state → roi → RDM
+    # ── Aggregate RDMs + sorted figures ──────────────────────────────────────
+    #
+    # Directory layout
+    # ----------------
+    # phase2_rdms/mean/{roi}/           – mean aggregate (category-sorted)
+    # phase2_rdms/median/{roi}/         – median aggregate (category-sorted)
+    # phase2_rdms/sorted_independent/{roi}/
+    #     Every subject + both aggregates, each sorted by its OWN optimal
+    #     Ward order.  Figures are NOT visually comparable across subjects
+    #     but faithfully represent individual geometry.
+    # phase2_rdms/sorted_consensus/{roi}/
+    #     Every subject + both aggregates, ALL sorted by the SAME GW-barycenter
+    #     consensus order.  Figures are directly visually comparable.
+    #
     agg_rdms: dict[str, dict[str, dict[str, RDM]]] = {
         m: {s: {} for s in ("conscious", "unconscious")}
         for m in _AGG_METHODS
@@ -221,7 +247,7 @@ def run(
         })
 
         for roi in all_rois:
-            roi_rdm_list = [
+            roi_rdm_list: list[RDM] = [
                 human_rdms[sid][state][roi]
                 for sid in human_rdms
                 if isinstance(human_rdms[sid], dict)
@@ -231,66 +257,62 @@ def run(
             if not roi_rdm_list:
                 continue
 
-            # Derive Ward sort once from the mean RDM — shared across all
-            # aggregation methods and individual subjects so figures are
-            # visually comparable (common stimulus ordering).
-            from analysis.rsa.rdm_utils import sorted_order
-            mean_matrix = np.stack(
-                [r.matrix for r in roi_rdm_list], axis=0
-            ).mean(axis=0)
-            common_order, best_k, best_score = sorted_order(mean_matrix)
-
+            # ─ Aggregate figures (category-sorted, one per method) ─────────
             for method in _AGG_METHODS:
                 agg = aggregate_rdm(
-                    roi_rdm_list,
-                    roi_or_layer=roi,
-                    state=state,
-                    method=method,
+                    roi_rdm_list, roi_or_layer=roi, state=state, method=method
                 )
                 agg_rdms[method][state][roi] = agg
-
-                # Plain (category-sorted) aggregate figure
                 rdm_plotter.plot_mean_rdm(
                     agg,
                     save_name=f"rdm_{method}_{state}_{roi}.png",
                     subdir=f"phase2_rdms/{method}/{roi}",
                 )
 
-                # Cluster-sorted aggregate figure  (using shared common_order)
+            # ─ Independent sorted figures ───────────────────────────────────
+            # Each subject and each aggregate sorted by its own optimal order.
+            all_rdms_for_sort = roi_rdm_list + [
+                agg_rdms[m][state][roi] for m in _AGG_METHODS
+            ]
+            for rdm_item in all_rdms_for_sort:
                 rdm_plotter.plot_sorted_rdm(
-                    agg,
-                    common_order=common_order,
-                    best_k=best_k,
-                    best_score=best_score,
-                    title_prefix=f"{method.title()}  ·  {state.title()}  ·  ",
-                    save_name=f"rdm_sorted_{method}_{state}_{roi}.png",
-                    subdir=f"phase2_rdms/sorted/{roi}",
+                    rdm_item,
+                    title_prefix=f"{rdm_item.subject_id}  ·  {state.title()}  ·  ",
+                    save_name=(
+                        f"rdm_sorted_indep_{rdm_item.subject_id}_{state}_{roi}.png"
+                    ),
+                    subdir=f"phase2_rdms/sorted_independent/{roi}",
+                    # No common_order supplied → each RDM uses its own Ward sort
                 )
 
-            # Cluster-sorted figures for individual subjects  (same common_order)
-            for rdm_subj in roi_rdm_list:
+            # ─ Consensus sorted figures (GW-barycenter order) ─────────────
+            logger.info(
+                "  Computing GW-barycenter consensus for ROI=%s state=%s …",
+                roi, state,
+            )
+            bary_matrix = gw_consensus_matrix(roi_rdm_list)
+            c_order, c_k, c_score = sorted_order(bary_matrix)
+
+            for rdm_item in all_rdms_for_sort:
                 rdm_plotter.plot_sorted_rdm(
-                    rdm_subj,
-                    common_order=common_order,
-                    best_k=best_k,
-                    best_score=best_score,
-                    title_prefix=f"{rdm_subj.subject_id}  ·  {state.title()}  ·  ",
+                    rdm_item,
+                    title_prefix=f"{rdm_item.subject_id}  ·  {state.title()}  ·  ",
                     save_name=(
-                        f"rdm_sorted_{rdm_subj.subject_id}_{state}_{roi}.png"
+                        f"rdm_sorted_consensus_{rdm_item.subject_id}_{state}_{roi}.png"
                     ),
-                    subdir=f"phase2_rdms/sorted/{roi}",
+                    subdir=f"phase2_rdms/sorted_consensus/{roi}",
+                    common_order=c_order,
+                    best_k=c_k,
+                    best_score=c_score,
                 )
 
         logger.info(
-            "Aggregate (mean+median) & sorted RDM figures saved for "
-            "state=%s (%d ROIs).",
+            "Aggregate & sorted RDM figures saved for state=%s (%d ROIs).",
             state, len(all_rois),
         )
 
-    # Attach aggregate RDMs so downstream phases (4, 7) can consume them.
-    # Prefixed key keeps iteration over subject IDs clean.
-    human_rdms["_agg_rdms"] = agg_rdms
-    # Legacy alias so any code that referenced '_mean_rdms' keeps working.
+    # Attach for downstream phases; legacy alias kept for Phase 4 / 7.
+    human_rdms["_agg_rdms"]  = agg_rdms
     human_rdms["_mean_rdms"] = agg_rdms["mean"]
 
     logger.info("Phase 2 complete.\n")

@@ -1,4 +1,4 @@
-"""visualization/rdm_plotter.py – Plot single and dual-state RDMs."""
+"""visualization/rdm_plotter.py – Plot single, dual-state, aggregate and second-order RDMs."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,6 +6,7 @@ from pathlib import Path
 import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.colors import TwoSlopeNorm
 
 from analysis.rsa.rdm import RDM
 from config.settings import Settings
@@ -23,7 +24,7 @@ class RDMPlotter:
         p.mkdir(parents=True, exist_ok=True)
         return p
 
-    # ── Public API ─────────────────────────────────────────────────────────────
+    # ── Single RDM ────────────────────────────────────────────────────────────
 
     def plot_rdm(
         self,
@@ -61,11 +62,15 @@ class RDMPlotter:
         )
         plt.tight_layout()
         if save_name:
-            fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(
+                self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
+            )
         if show:
             plt.show()
         plt.close(fig)
         return fig
+
+    # ── Dual-state ───────────────────────────────────────────────────────────
 
     def plot_dual_state(
         self,
@@ -78,14 +83,9 @@ class RDMPlotter:
     ) -> plt.Figure:
         """Plot conscious and unconscious human RDMs side by side."""
         return self._plot_dual(
-            rdm_left=rdm_conscious,
-            rdm_right=rdm_unconscious,
-            label_left="Conscious",
-            label_right="Unconscious",
-            suptitle=suptitle,
-            save_name=save_name,
-            subdir=subdir,
-            show=show,
+            rdm_left=rdm_conscious, rdm_right=rdm_unconscious,
+            label_left="Conscious", label_right="Unconscious",
+            suptitle=suptitle, save_name=save_name, subdir=subdir, show=show,
         )
 
     def plot_dual_state_fcnn(
@@ -99,14 +99,10 @@ class RDMPlotter:
     ) -> plt.Figure:
         """Plot FCNN clear (0-noise) and noisy (chance-level) RDMs side by side."""
         return self._plot_dual(
-            rdm_left=rdm_clear,
-            rdm_right=rdm_noisy,
-            label_left="Clear (0-noise)",
-            label_right="Noisy (chance-level)",
+            rdm_left=rdm_clear, rdm_right=rdm_noisy,
+            label_left="Clear (0-noise)", label_right="Noisy (chance-level)",
             suptitle=suptitle or "FCNN  ·  Representational Dissimilarity Matrix\n(Clear | Noisy)",
-            save_name=save_name,
-            subdir=subdir,
-            show=show,
+            save_name=save_name, subdir=subdir, show=show,
         )
 
     # ── Aggregate RDM (mean / median) ───────────────────────────────────────
@@ -123,14 +119,12 @@ class RDMPlotter:
         """
         Plot a cross-subject aggregate RDM (mean or median).
 
-        The title is derived from ``rdm.subject_id`` (``'mean'`` or
-        ``'median'``), so no extra parameter is needed.  An optional
-        cross-modality RSA annotation is appended when supplied.
-
-        ``subdir`` defaults to ``phase2_rdms/<method>`` if not given.
+        Title and default subdir are derived from ``rdm.subject_id``
+        (``'mean'`` or ``'median'``), so no extra parameter is required.
         """
-        method   = rdm.subject_id          # 'mean' or 'median'
-        subdir   = subdir or f"phase2_rdms/{method}"
+        method = rdm.subject_id          # 'mean' or 'median'
+        subdir = subdir or f"phase2_rdms/{method}"
+
         sort_idx = np.argsort(1 - rdm.labels)
         mat      = np.copy(rdm.matrix[np.ix_(sort_idx, sort_idx)])
         np.fill_diagonal(mat, np.nan)
@@ -157,15 +151,17 @@ class RDMPlotter:
         ax.legend(
             handles=[
                 mpatches.Patch(color="none", label=f"Living (n={n_living})"),
-                mpatches.Patch(color="none",
-                               label=f"Non-living (n={n_total - n_living})"),
+                mpatches.Patch(
+                    color="none", label=f"Non-living (n={n_total - n_living})"
+                ),
             ],
             loc="lower right", fontsize=7, framealpha=0.7,
         )
         plt.tight_layout()
         if save_name:
-            fig.savefig(self._out_dir(subdir) / save_name,
-                        dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(
+                self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
+            )
         if show:
             plt.show()
         plt.close(fig)
@@ -178,48 +174,38 @@ class RDMPlotter:
         rdm: RDM,
         title_prefix: str = "",
         save_name: str | None = None,
-        subdir: str = "phase2_rdms/sorted",
+        subdir: str = "phase2_rdms/sorted_independent",
         show: bool = False,
-        # Optional pre-computed ordering (pass from Phase 2 to enforce a
-        # common stimulus arrangement across all subjects and aggregates).
         common_order: np.ndarray | None = None,
         best_k: int | None = None,
         best_score: float | None = None,
-        # Only used when common_order is NOT supplied.
         k_min: int = 3,
         k_max: int = 40,
     ) -> plt.Figure:
         """
         Plot a cluster-sorted RDM with Ward/silhouette boundary lines.
 
-        When ``common_order`` is provided (pre-computed from the mean RDM
-        in Phase 2), the same stimulus arrangement is applied verbatim —
-        making all sorted figures within a ROI visually comparable.
-        When omitted, the optimal order is derived independently from this
-        RDM's own dissimilarity structure.
+        ``common_order`` absent  →  independent sort (sorted_independent/).
+        ``common_order`` present →  GW-consensus sort (sorted_consensus/).
         """
         from scipy.cluster.hierarchy import fcluster, linkage
         from scipy.spatial.distance import squareform
 
         if common_order is not None:
-            # Use the supplied consensus ordering.
-            order      = common_order
-            _best_k    = best_k
+            order       = common_order
+            _best_k     = best_k
             _best_score = best_score
-            # Derive cluster labels by re-cutting the *own* dendrogram at k*
-            # so boundaries reflect this RDM's local geometry while stimulus
-            # positions are fixed by the consensus order.
-            condensed  = np.clip(squareform(rdm.matrix, checks=False), 0, None)
-            Z          = linkage(condensed, method="ward")
-            labels_arr = fcluster(Z, _best_k, criterion="maxclust")[order] - 1
+            order_src   = "GW-consensus"
         else:
             from analysis.rsa.rdm_utils import sorted_order
             order, _best_k, _best_score = sorted_order(
                 rdm.matrix, k_min=k_min, k_max=k_max
             )
-            condensed  = np.clip(squareform(rdm.matrix, checks=False), 0, None)
-            Z          = linkage(condensed, method="ward")
-            labels_arr = fcluster(Z, _best_k, criterion="maxclust")[order] - 1
+            order_src = "independent"
+
+        condensed  = np.clip(squareform(rdm.matrix, checks=False), 0, None)
+        Z          = linkage(condensed, method="ward")
+        labels_arr = fcluster(Z, _best_k, criterion="maxclust")[order] - 1
 
         mat = rdm.matrix[np.ix_(order, order)]
         np.fill_diagonal(mat, np.nan)
@@ -233,20 +219,126 @@ class RDMPlotter:
             ax.axhline(b, color="black", lw=1.2, ls="--", alpha=0.7)
             ax.axvline(b, color="black", lw=1.2, ls="--", alpha=0.7)
 
-        order_src = "consensus" if common_order is not None else "independent"
-        ax.set_xlabel(f"Stimuli (cluster-sorted, {order_src})")
-        ax.set_ylabel(f"Stimuli (cluster-sorted, {order_src})")
+        ax.set_xlabel(f"Stimuli ({order_src} order)")
+        ax.set_ylabel(f"Stimuli ({order_src} order)")
         ax.set_title(
             f"{title_prefix}Cluster-Sorted RDM  ·  {rdm.roi_or_layer}  ·  "
             f"{rdm.state.title()}\n"
-            f"Ward linkage  |  k*={_best_k}  |  silhouette={_best_score:.3f}  "
-            f"({order_src} order)",
+            f"Ward  |  k*={_best_k}  |  silhouette={_best_score:.3f}  "
+            f"({order_src})",
             fontsize=9, pad=8,
         )
         plt.tight_layout()
         if save_name:
-            fig.savefig(self._out_dir(subdir) / save_name,
-                        dpi=self._dpi, bbox_inches="tight")
+            fig.savefig(
+                self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
+            )
+        if show:
+            plt.show()
+        plt.close(fig)
+        return fig
+
+    # ── ROI × ROI second-order RDM ──────────────────────────────────────────
+
+    def plot_roi_x_roi_rdm(
+        self,
+        rho_matrix: np.ndarray,
+        p_matrix: np.ndarray,
+        roi_names: list[str],
+        method: str,
+        state: str,
+        save_name: str | None = None,
+        subdir: str = "phase4_cross_modality/roi_x_roi",
+        alpha: float = 0.05,
+        show: bool = False,
+    ) -> plt.Figure:
+        """
+        Heatmap of Spearman ρ between every pair of ROI aggregate RDMs.
+
+        Each cell shows the ρ value.  Cells that do NOT reach Bonferroni-
+        corrected significance are hatched so the pattern is immediately
+        apparent.  The diagonal (self-correlation = 1) is shown in a
+        neutral grey to avoid visual bias.
+
+        Parameters
+        ----------
+        rho_matrix : (n, n) Spearman ρ values
+        p_matrix   : (n, n) corresponding p-values
+        roi_names  : ordered list of ROI labels
+        method     : 'mean' or 'median'  (used in title)
+        state      : 'conscious' or 'unconscious'
+        alpha      : significance threshold before Bonferroni
+        """
+        n          = len(roi_names)
+        n_pairs    = n * (n - 1) // 2
+        bonf_alpha = alpha / max(n_pairs, 1)
+        sig_mask   = p_matrix < bonf_alpha
+        np.fill_diagonal(sig_mask, True)   # diagonal always "significant"
+
+        # Mask diagonal for colour mapping (show as grey)
+        plot_mat = rho_matrix.copy().astype(float)
+        diag_val = np.nan
+        np.fill_diagonal(plot_mat, diag_val)
+
+        fig, ax = plt.subplots(
+            figsize=(max(5, n * 0.65 + 1.5), max(4.5, n * 0.65 + 1.2))
+        )
+
+        # Diverging colourmap centred at 0
+        vabs = np.nanmax(np.abs(rho_matrix[~np.eye(n, dtype=bool)]))
+        norm = TwoSlopeNorm(vmin=-vabs, vcenter=0.0, vmax=vabs)
+        im   = ax.imshow(plot_mat, cmap="RdYlBu_r", norm=norm, aspect="auto")
+        plt.colorbar(im, ax=ax, label="Spearman ρ")
+
+        # Grey diagonal
+        for i in range(n):
+            ax.add_patch(
+                plt.Rectangle(
+                    (i - 0.5, i - 0.5), 1, 1,
+                    color="lightgrey", zorder=2,
+                )
+            )
+            ax.text(i, i, "1.00", ha="center", va="center",
+                    fontsize=7, color="dimgrey", zorder=3)
+
+        # Cell annotations + significance hatching
+        for i in range(n):
+            for j in range(n):
+                if i == j:
+                    continue
+                rho = rho_matrix[i, j]
+                ax.text(
+                    j, i, f"{rho:.2f}",
+                    ha="center", va="center",
+                    fontsize=max(5, 8 - n // 4),
+                    color="black" if abs(rho) < 0.7 else "white",
+                    zorder=3,
+                )
+                if not sig_mask[i, j]:
+                    ax.add_patch(
+                        plt.Rectangle(
+                            (j - 0.5, i - 0.5), 1, 1,
+                            fill=False, hatch="///",
+                            edgecolor="grey", lw=0.5, zorder=4,
+                        )
+                    )
+
+        labels = [r.replace("_", "\n") for r in roi_names]
+        ax.set_xticks(range(n))
+        ax.set_xticklabels(labels, fontsize=7, rotation=45, ha="right")
+        ax.set_yticks(range(n))
+        ax.set_yticklabels(labels, fontsize=7)
+        ax.set_title(
+            f"ROI × ROI Second-Order RDM  ·  {method.title()}  ·  {state.title()}\n"
+            f"Spearman ρ between aggregate RDM upper triangles\n"
+            f"(hatching = non-significant after Bonferroni, α={alpha})",
+            fontsize=9, pad=10,
+        )
+        plt.tight_layout()
+        if save_name:
+            fig.savefig(
+                self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
+            )
         if show:
             plt.show()
         plt.close(fig)
@@ -291,8 +383,7 @@ class RDMPlotter:
         plt.tight_layout()
         if save_name:
             fig.savefig(
-                self._out_dir(subdir) / save_name,
-                dpi=self._dpi, bbox_inches="tight",
+                self._out_dir(subdir) / save_name, dpi=self._dpi, bbox_inches="tight"
             )
         if show:
             plt.show()
