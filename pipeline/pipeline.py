@@ -17,11 +17,10 @@ from visualization.rdm_plotter import RDMPlotter
 from visualization.meta_mds_plotter import MetaMDSPlotter
 from visualization.transport_plotter import TransportPlotter
 from visualization.summary_plotter import SummaryPlotter
-from pipeline.phases import phase7_svm
-
 
 from pipeline.phases import (
     phase0_finetune,
+    phase0b_svm,
     phase1_embeddings,
     phase2_rdms,
     phase3_rsa,
@@ -104,6 +103,12 @@ class POCPipeline:
             self._cfg, self._fcnn_embedder, self._subjects, stimulus_image_dir
         )
 
+    def phase0b_svm_decoding(self) -> dict:
+        """Phase 0.2 – SVM decoding; runs right after FCNN fine-tuning."""
+        return phase0b_svm.run(
+            self._cfg, self._subjects, self._human_rdms,
+        )
+
     def phase1_extract_embeddings(self, stimulus_image_dir=None) -> None:
         phase1_embeddings.run(
             self._fcnn_embedder, self._embedding_store, stimulus_image_dir
@@ -126,6 +131,7 @@ class POCPipeline:
         return phase4_cross_modality.run(
             self._cfg, self._human_rdms, self._fcnn_rdms,
             self._rsa_analyzer, self._gw_aligner,
+            noise_ceiling=self._noise_ceiling,   # wired up: was missing before
         )
 
     def phase5_structural_invariance(self) -> dict:
@@ -141,25 +147,19 @@ class POCPipeline:
             settings=self._cfg,
         )
 
-    def phase7_svm_decoding(self) -> dict:
-        from pipeline.phases import phase7_svm
-        return phase7_svm.run(
-            self._cfg, self._subjects, self._human_rdms,
-        )
-
     # ── Full pipeline ────────────────────────────────────────────────────────
 
     def run(self, subject_ids=None, stimulus_image_dir=None) -> None:
         logger.info("Starting POC Pipeline")
         self.load_subjects(subject_ids)
-        self.phase0_finetune_fcnn(stimulus_image_dir)
+        self.phase0_finetune_fcnn(stimulus_image_dir)   # Phase 0.1
+        self.phase0b_svm_decoding()                     # Phase 0.2 – right after FCNN
         self.phase1_extract_embeddings(stimulus_image_dir)
         self.phase2_build_rdms()
         self.phase3_inter_subject_rsa()
         self.phase4_cross_modality_alignment()
         self.phase5_structural_invariance()
         self.phase6_visualize()
-        self.phase7_svm_decoding()
         logger.info(
             "Pipeline complete. Results saved to: %s", self._cfg.results_dir
         )

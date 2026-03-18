@@ -1,1 +1,1 @@
-# Phase functions – imported by pipeline.py
+# pipeline/phases package

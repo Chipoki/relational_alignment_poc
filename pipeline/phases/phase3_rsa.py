@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import pickle
 from pathlib import Path
 
 from config.settings import Settings
@@ -21,6 +22,25 @@ def _subject_ids(human_rdms: dict) -> list[str]:
     return [sid for sid in human_rdms if not str(sid).startswith("_")]
 
 
+def _gw_cache_dir(settings: Settings) -> Path:
+    d = Path(getattr(settings, "checkpoints_dir", "checkpoints")) / "gw"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _load_or_compute_gw(cache_path: Path, compute_fn):
+    """Load a GW matrix from *cache_path* if it exists, else call compute_fn() and save."""
+    if cache_path.exists():
+        logger.info("  Loading cached GW matrix: %s", cache_path.name)
+        with open(cache_path, "rb") as fh:
+            return pickle.load(fh)
+    result = compute_fn()
+    with open(cache_path, "wb") as fh:
+        pickle.dump(result, fh, protocol=pickle.HIGHEST_PROTOCOL)
+    logger.info("  Saved GW matrix cache: %s", cache_path.name)
+    return result
+
+
 def run(
     settings: Settings,
     human_rdms: dict,
@@ -34,6 +54,7 @@ def run(
     logger.info("=" * 60)
 
     phase3_plotter = Phase3Plotter(settings)
+    gw_cache       = _gw_cache_dir(settings)
     summary: dict  = {}
 
     all_rsa_results: dict[str, dict[str, list[RSAResult]]] = {}
@@ -93,8 +114,11 @@ def run(
         rdms_u = all_roi_rdms.get(roi, {}).get("unconscious", [])
 
         if len(rdms_c) >= 2:
-            ids_c = [f"{rdm.subject_id}_con" for rdm in rdms_c]
-            gw_cc = gw_aligner.build_pairwise_distance_matrix(rdms_c, ids_c)
+            ids_c  = [f"{rdm.subject_id}_con" for rdm in rdms_c]
+            gw_cc  = _load_or_compute_gw(
+                gw_cache / f"phase3_gw_{roi}_cc.pkl",
+                lambda: gw_aligner.build_pairwise_distance_matrix(rdms_c, ids_c),
+            )
             gw_cc.state = "conscious"; gw_cc.roi_or_layer = roi
             phase3_plotter.plot_gw_matrix(
                 gw_cc,
@@ -104,8 +128,11 @@ def run(
             )
 
         if len(rdms_u) >= 2:
-            ids_u = [f"{rdm.subject_id}_unc" for rdm in rdms_u]
-            gw_uu = gw_aligner.build_pairwise_distance_matrix(rdms_u, ids_u)
+            ids_u  = [f"{rdm.subject_id}_unc" for rdm in rdms_u]
+            gw_uu  = _load_or_compute_gw(
+                gw_cache / f"phase3_gw_{roi}_uu.pkl",
+                lambda: gw_aligner.build_pairwise_distance_matrix(rdms_u, ids_u),
+            )
             gw_uu.state = "unconscious"; gw_uu.roi_or_layer = roi
             phase3_plotter.plot_gw_matrix(
                 gw_uu,
@@ -120,7 +147,10 @@ def run(
                 [f"{rdm.subject_id}_con" for rdm in rdms_c]
                 + [f"{rdm.subject_id}_unc" for rdm in rdms_u]
             )
-            gw_cu = gw_aligner.build_pairwise_distance_matrix(all_rdms_cu, ids_cu)
+            gw_cu  = _load_or_compute_gw(
+                gw_cache / f"phase3_gw_{roi}_cu.pkl",
+                lambda: gw_aligner.build_pairwise_distance_matrix(all_rdms_cu, ids_cu),
+            )
             gw_cu.state = "conscious_vs_unconscious"; gw_cu.roi_or_layer = roi
             phase3_plotter.plot_inter_state_gw_matrix(gw_cu, roi=roi)
 

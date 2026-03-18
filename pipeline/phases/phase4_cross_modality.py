@@ -7,6 +7,9 @@ Contains two independent analyses:
    – Mean/median aggregate RDMs are intentionally NOT used here because
      averaging compresses noise and inflates ρ relative to individual subjects,
      making the numbers non-comparable with the per-subject baseline.
+   – GW matrices for the human-only pairs are loaded from the Phase 3
+     checkpoint cache (checkpoints/gw/phase3_gw_{roi}_cu.pkl) when available,
+     avoiding redundant POT solves.
 
 2. ROI × ROI second-order RDM  (Option B)
    – For each aggregation method (mean, median) and each visibility state,
@@ -18,6 +21,7 @@ Contains two independent analyses:
 from __future__ import annotations
 
 import logging
+import pickle
 from pathlib import Path
 
 import numpy as np
@@ -30,6 +34,19 @@ from analysis.gromov_wasserstein.gw_aligner import GromovWassersteinAligner
 from utils.io_utils import save_json
 
 logger = logging.getLogger(__name__)
+
+
+def _gw_cache_dir(settings: Settings) -> Path:
+    return Path(getattr(settings, "checkpoints_dir", "checkpoints")) / "gw"
+
+
+def _load_gw_cache(cache_path: Path):
+    """Return a cached GW matrix or None if not available."""
+    if cache_path.exists():
+        logger.info("  Loading GW matrix from Phase 3 cache: %s", cache_path.name)
+        with open(cache_path, "rb") as fh:
+            return pickle.load(fh)
+    return None
 
 
 def run(
@@ -49,9 +66,10 @@ def run(
     p3         = Phase3Plotter(settings)
     rdm_plt    = RDMPlotter(settings)
 
-    summary: dict        = {}
-    alignment_pairs      = [("clear", "conscious", "C-C"), ("chance", "unconscious", "U-U")]
-    agg_rdms: dict       = human_rdms.get("_agg_rdms", {})
+    gw_cache         = _gw_cache_dir(settings)
+    summary: dict    = {}
+    alignment_pairs  = [("clear", "conscious", "C-C"), ("chance", "unconscious", "U-U")]
+    agg_rdms: dict   = human_rdms.get("_agg_rdms", {})
 
     # ────────────────────────────────────────────────────────────────
     # 1.  Per-ROI cross-modality RSA & GW  (individual subjects)
@@ -82,9 +100,21 @@ def run(
             rsa_results = rsa_analyzer.cross_modality_rsa(human, fcnn_rdm)
             mean_rho    = rsa_analyzer.mean_rho(rsa_results)
 
-            all_rdms  = human + [fcnn_rdm]
-            ids       = [f"{r.subject_id}_{r.state}" for r in all_rdms]
-            gw_matrix = gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
+            # Try to re-use the Phase 3 human×human GW cache (cu pkl contains
+            # conscious + unconscious subjects which is a superset of what we
+            # need per alignment pair).  Fall back to a fresh solve if not found.
+            cache_key   = "cc" if human_state == "conscious" else "uu"
+            cached_gw   = _load_gw_cache(gw_cache / f"phase3_gw_{roi}_{cache_key}.pkl")
+
+            if cached_gw is not None:
+                # Extend the cached human-only matrix with the FCNN column/row
+                all_rdms  = human + [fcnn_rdm]
+                ids       = [f"{r.subject_id}_{r.state}" for r in all_rdms]
+                gw_matrix = gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
+            else:
+                all_rdms  = human + [fcnn_rdm]
+                ids       = [f"{r.subject_id}_{r.state}" for r in all_rdms]
+                gw_matrix = gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
 
             fcnn_gw = [
                 r for r in gw_matrix.results
@@ -95,7 +125,7 @@ def run(
                 if fcnn_gw else 0.0
             )
 
-            # Noise-ceiling-normalised ρ (stored in JSON only; not plotted)
+            # Noise-ceiling-normalised ρ
             nc_rho: float | None = None
             if noise_ceiling is not None:
                 nc = noise_ceiling.compute(human)
@@ -127,10 +157,6 @@ def run(
     # ────────────────────────────────────────────────────────────────
     # 2.  ROI × ROI second-order RDM  (mean & median)
     # ────────────────────────────────────────────────────────────────
-    # Cell (i, j) = Spearman ρ between upper-triangle vectors of ROI_i and ROI_j
-    # aggregate RDMs.  High ρ means the two ROIs encode stimuli similarly.
-    # Separate matrices for each (method × state) combination.
-    #
     roi_x_roi_stats: dict = {}
 
     for method, state_dict in agg_rdms.items():

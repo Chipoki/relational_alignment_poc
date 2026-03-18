@@ -24,6 +24,12 @@ def _normalize_name(s: str) -> str:
     return re.sub(r'[^a-z0-9]', '', Path(str(s)).stem.lower())
 
 
+def _rdm_cache_dir(settings: Settings) -> Path:
+    d = Path(getattr(settings, "checkpoints_dir", "checkpoints")) / "rdms"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 def run(
     settings: Settings,
     subjects: list,
@@ -45,7 +51,8 @@ def run(
     logger.info("PHASE 2 – Dual-State Intra-Modality RDM Construction")
     logger.info("=" * 60)
 
-    rdm_dir = Path(settings.rdm_dir)
+    rdm_dir   = Path(settings.rdm_dir)
+    cache_dir = _rdm_cache_dir(settings)
     ensure_dir(rdm_dir)
 
     human_rdms: dict = {}
@@ -259,9 +266,22 @@ def run(
 
             # ─ Aggregate figures (category-sorted, one per method) ─────────
             for method in _AGG_METHODS:
-                agg = aggregate_rdm(
-                    roi_rdm_list, roi_or_layer=roi, state=state, method=method
-                )
+                agg_cache = cache_dir / f"agg_{method}_{state}_{roi}.npy"
+                if agg_cache.exists():
+                    logger.info(
+                        "  Loading cached agg RDM: method=%s state=%s roi=%s",
+                        method, state, roi,
+                    )
+                    agg = RDMBuilder.load(str(agg_cache))
+                else:
+                    agg = aggregate_rdm(
+                        roi_rdm_list, roi_or_layer=roi, state=state, method=method
+                    )
+                    RDMBuilder.save(agg, str(agg_cache))
+                    logger.info(
+                        "  Cached agg RDM: method=%s state=%s roi=%s → %s",
+                        method, state, roi, agg_cache,
+                    )
                 agg_rdms[method][state][roi] = agg
                 rdm_plotter.plot_mean_rdm(
                     agg,
@@ -270,7 +290,6 @@ def run(
                 )
 
             # ─ Independent sorted figures ───────────────────────────────────
-            # Each subject and each aggregate sorted by its own optimal order.
             all_rdms_for_sort = roi_rdm_list + [
                 agg_rdms[m][state][roi] for m in _AGG_METHODS
             ]
@@ -282,16 +301,34 @@ def run(
                         f"rdm_sorted_indep_{rdm_item.subject_id}_{state}_{roi}.png"
                     ),
                     subdir=f"phase2_rdms/sorted_independent/{roi}",
-                    # No common_order supplied → each RDM uses its own Ward sort
                 )
 
             # ─ Consensus sorted figures (GW-barycenter order) ─────────────
-            logger.info(
-                "  Computing GW-barycenter consensus for ROI=%s state=%s …",
-                roi, state,
-            )
-            bary_matrix = gw_consensus_matrix(roi_rdm_list)
-            c_order, c_k, c_score = sorted_order(bary_matrix)
+            consensus_cache = cache_dir / f"consensus_order_{state}_{roi}.npz"
+            if consensus_cache.exists():
+                logger.info(
+                    "  Loading cached GW consensus order: state=%s roi=%s", state, roi
+                )
+                loaded    = np.load(str(consensus_cache), allow_pickle=True)
+                c_order   = loaded["c_order"]
+                c_k       = int(loaded["c_k"])
+                c_score   = float(loaded["c_score"])
+            else:
+                logger.info(
+                    "  Computing GW-barycenter consensus for ROI=%s state=%s …",
+                    roi, state,
+                )
+                bary_matrix = gw_consensus_matrix(roi_rdm_list)
+                c_order, c_k, c_score = sorted_order(bary_matrix)
+                np.savez(
+                    str(consensus_cache),
+                    c_order=c_order,
+                    c_k=np.array(c_k),
+                    c_score=np.array(c_score),
+                )
+                logger.info(
+                    "  Cached GW consensus order → %s", consensus_cache
+                )
 
             for rdm_item in all_rdms_for_sort:
                 rdm_plotter.plot_sorted_rdm(
@@ -311,7 +348,7 @@ def run(
             state, len(all_rois),
         )
 
-    # Attach for downstream phases; legacy alias kept for Phase 4 / 7.
+    # Attach for downstream phases; legacy alias kept for Phase 4.
     human_rdms["_agg_rdms"]  = agg_rdms
     human_rdms["_mean_rdms"] = agg_rdms["mean"]
 

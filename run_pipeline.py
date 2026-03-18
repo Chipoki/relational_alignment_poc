@@ -3,6 +3,17 @@
 Usage
 -----
     python run_pipeline.py --config config/config.yaml [--subjects sub-01] [--phase 2]
+
+Phase numbering
+---------------
+    0   – FCNN fine-tuning        (phase 0.1)
+    0b  – SVM decoding            (phase 0.2, runs right after FCNN fine-tune)
+    1   – Embedding extraction
+    2   – RDM construction
+    3   – Inter-subject RSA
+    4   – Cross-modality alignment
+    5   – Structural invariance
+    6   – Visualisation
 """
 from __future__ import annotations
 
@@ -18,6 +29,8 @@ from config.settings import Settings
 from pipeline.pipeline import POCPipeline
 from utils.logging_utils import setup_logging
 
+_VALID_PHASES = ["0", "0b", "1", "2", "3", "4", "5", "6"]
+
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -31,8 +44,13 @@ def _parse_args() -> argparse.Namespace:
         default="./../soto_data/unconfeats/data/experiment_images_greyscaled",
     )
     parser.add_argument(
-        "--phase", type=int, default=None, choices=[0, 1, 2, 3, 4, 5, 6],
-        help="Run a single phase (requires prior phases' outputs on disk)",
+        "--phase",
+        default=None,
+        choices=_VALID_PHASES,
+        help=(
+            "Run a single phase (requires prior phases' outputs on disk). "
+            "Valid values: " + ", ".join(_VALID_PHASES)
+        ),
     )
     parser.add_argument(
         "--log-level", default="INFO",
@@ -54,13 +72,14 @@ def main() -> None:
 
     pipeline.load_subjects(args.subjects)
     dispatch = {
-        0: lambda: pipeline.phase0_finetune_fcnn(args.stimulus_dir),
-        1: lambda: pipeline.phase1_extract_embeddings(args.stimulus_dir),
-        2: pipeline.phase2_build_rdms,
-        3: pipeline.phase3_inter_subject_rsa,
-        4: pipeline.phase4_cross_modality_alignment,
-        5: pipeline.phase5_structural_invariance,
-        6: pipeline.phase6_visualize,
+        "0":  lambda: pipeline.phase0_finetune_fcnn(args.stimulus_dir),
+        "0b": lambda: pipeline.phase0b_svm_decoding(),
+        "1":  lambda: pipeline.phase1_extract_embeddings(args.stimulus_dir),
+        "2":  pipeline.phase2_build_rdms,
+        "3":  pipeline.phase3_inter_subject_rsa,
+        "4":  pipeline.phase4_cross_modality_alignment,
+        "5":  pipeline.phase5_structural_invariance,
+        "6":  pipeline.phase6_visualize,
     }
     dispatch[args.phase]()
 
