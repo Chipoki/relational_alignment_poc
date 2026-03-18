@@ -7,11 +7,12 @@ from pathlib import Path
 
 import numpy as np
 
-from config.settings import Settings
 from analysis.rsa.rdm import RDMBuilder, RDM
+from analysis.rsa.rdm_utils import mean_rdm as compute_mean_rdm
+from config.settings import Settings
 from embeddings.embedding_store import EmbeddingStore
-from visualization.rdm_plotter import RDMPlotter
 from utils.io_utils import ensure_dir
+from visualization.rdm_plotter import RDMPlotter
 
 logger = logging.getLogger(__name__)
 
@@ -200,5 +201,61 @@ def run(
                 "Saved dual-state RDM plots for %s across %d ROIs.", sid, len(all_rois)
             )
 
+    # ── Mean RDMs per ROI per state + sorted RDM figures ─────────────────
+
+    mean_rdms: dict[str, dict[str, RDM]] = {}  # state → roi → mean RDM
+
+    for state in ("conscious", "unconscious"):
+        mean_rdms[state] = {}
+        all_rois = sorted({
+            roi
+            for sid in human_rdms
+            if state in human_rdms[sid]
+            for roi in human_rdms[sid][state]
+        })
+        for roi in all_rois:
+            roi_rdm_list = [
+                human_rdms[sid][state][roi]
+                for sid in human_rdms
+                if state in human_rdms[sid] and roi in human_rdms[sid][state]
+            ]
+            if not roi_rdm_list:
+                continue
+
+            m_rdm = compute_mean_rdm(roi_rdm_list, roi_or_layer=roi, state=state)
+            mean_rdms[state][roi] = m_rdm
+
+            # Plot mean RDM
+            rdm_plotter.plot_mean_rdm(
+                m_rdm,
+                save_name=f"rdm_mean_{state}_{roi}.png",
+                subdir=f"phase2_rdms/mean/{roi}",
+            )
+
+            # Plot sorted RDM for the mean
+            rdm_plotter.plot_sorted_rdm(
+                m_rdm,
+                title_prefix=f"Mean  ·  {state.title()}  ·  ",
+                save_name=f"rdm_sorted_mean_{state}_{roi}.png",
+                subdir=f"phase2_rdms/sorted/{roi}",
+            )
+
+            # Plot sorted RDM for each individual subject
+            for rdm_subj in roi_rdm_list:
+                rdm_plotter.plot_sorted_rdm(
+                    rdm_subj,
+                    title_prefix=f"{rdm_subj.subject_id}  ·  {state.title()}  ·  ",
+                    save_name=f"rdm_sorted_{rdm_subj.subject_id}_{state}_{roi}.png",
+                    subdir=f"phase2_rdms/sorted/{roi}",
+                )
+
+        logger.info("Mean & sorted RDM figures saved for state=%s (%d ROIs).",
+                    state, len(mean_rdms[state]))
+
+    # Attach mean_rdms to the return so downstream phases can use it
+    # We smuggle it via a lightweight attribute on the dict
+    human_rdms["_mean_rdms"] = mean_rdms  # key prefixed with _ for easy filtering
+
     logger.info("Phase 2 complete.\n")
+
     return human_rdms, fcnn_rdms

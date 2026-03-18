@@ -28,6 +28,7 @@ def run(
 
     summary: dict = {}
     alignment_pairs = [("clear", "conscious", "C-C"), ("chance", "unconscious", "U-U")]
+    mean_rdms = human_rdms.get("_mean_rdms", {})
 
     for noise_state, human_state, label in alignment_pairs:
         if noise_state not in fcnn_rdms:
@@ -82,6 +83,41 @@ def run(
                 save_name=f"phase4_gw_matrix_{roi}_{label}.png",
                 subdir=f"phase4_cross_modality/{roi}",
             )
+
+    # ── Mean-RDM cross-modality RSA ──────────────────────────────────────
+    # After computing rsa_results per ROI, also run on the group mean RDM
+    # and annotate its saved figure.
+
+    mean_rdms = human_rdms.get("_mean_rdms", {})
+    for noise_state, human_state, label in alignment_pairs:
+        if noise_state not in fcnn_rdms:
+            continue
+        fcnn_rdm = fcnn_rdms[noise_state].get("fcnn_hidden")
+        if fcnn_rdm is None:
+            continue
+        for roi in settings.active_roi_names:
+            m_rdm = mean_rdms.get(human_state, {}).get(roi)
+            if m_rdm is None:
+                continue
+            rho, p = rsa_analyzer.correlate(m_rdm, fcnn_rdm)
+            logger.info(
+                "  Mean-RDM cross-modality RSA | %s | ROI %s | ρ=%.3f p=%.4f",
+                label, roi, rho, p,
+            )
+            # Re-plot mean RDM with RSA annotation
+            from visualization.rdm_plotter import RDMPlotter
+            rdm_plotter = RDMPlotter(settings)
+            rdm_plotter.plot_mean_rdm(
+                m_rdm,
+                rsa_rho=rho,
+                rsa_p=p,
+                save_name=f"rdm_mean_{human_state}_{roi}_with_rsa.png",
+                subdir=f"phase4_cross_modality/mean_rdm/{roi}",
+            )
+            summary.setdefault(label, {}).setdefault(roi, {}).update({
+                "mean_rdm_fcnn_rho": rho,
+                "mean_rdm_fcnn_p":   p,
+            })
 
     save_json(summary, Path(settings.stats_dir) / "phase4_cross_modality.json")
     logger.info("Phase 4 complete.\n")

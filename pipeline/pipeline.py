@@ -17,6 +17,8 @@ from visualization.rdm_plotter import RDMPlotter
 from visualization.meta_mds_plotter import MetaMDSPlotter
 from visualization.transport_plotter import TransportPlotter
 from visualization.summary_plotter import SummaryPlotter
+from pipeline.phases import phase7_svm
+
 
 from pipeline.phases import (
     phase0_finetune,
@@ -139,6 +141,12 @@ class POCPipeline:
             settings=self._cfg,
         )
 
+    def phase7_svm_decoding(self) -> dict:
+        from pipeline.phases import phase7_svm
+        return phase7_svm.run(
+            self._cfg, self._subjects, self._human_rdms,
+        )
+
     # ── Full pipeline ────────────────────────────────────────────────────────
 
     def run(self, subject_ids=None, stimulus_image_dir=None) -> None:
@@ -151,6 +159,7 @@ class POCPipeline:
         self.phase4_cross_modality_alignment()
         self.phase5_structural_invariance()
         self.phase6_visualize()
+        self.phase7_svm_decoding()
         logger.info(
             "Pipeline complete. Results saved to: %s", self._cfg.results_dir
         )
