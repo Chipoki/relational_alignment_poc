@@ -16,6 +16,11 @@ from utils.io_utils import save_json
 logger = logging.getLogger(__name__)
 
 
+def _subject_ids(human_rdms: dict) -> list[str]:
+    """Return only real subject keys, skipping internal sentinel keys (prefixed '_')."""
+    return [sid for sid in human_rdms if not str(sid).startswith("_")]
+
+
 def run(
     settings: Settings,
     human_rdms: dict,
@@ -34,13 +39,15 @@ def run(
     all_rsa_results: dict[str, dict[str, list[RSAResult]]] = {}
     all_roi_rdms:    dict[str, dict[str, list[RDM]]]       = {}
 
+    subject_ids = _subject_ids(human_rdms)   # ← excludes _agg_rdms, _mean_rdms
+
     # ── Per-ROI per-state RSA + noise ceiling ────────────────────────────
     for state in ("conscious", "unconscious"):
         state_summary: dict = {}
-        for roi in settings.active_roi_names:              # ← active_roi_names
+        for roi in settings.active_roi_names:
             roi_rdms: list[RDM] = [
                 human_rdms[sid][state][roi]
-                for sid in human_rdms
+                for sid in subject_ids
                 if state in human_rdms[sid] and roi in human_rdms[sid][state]
             ]
             if len(roi_rdms) < 2:
@@ -80,8 +87,8 @@ def run(
 
         summary[state] = state_summary
 
-    # ── Feature 2 – GW matrices: C×C, U×U, C×U per ROI ──────────────────
-    for roi in settings.active_roi_names:                  # ← active_roi_names
+    # ── Feature 2 – GW matrices: C×C, U×U, C×U per ROI ────────────────
+    for roi in settings.active_roi_names:
         rdms_c = all_roi_rdms.get(roi, {}).get("conscious",   [])
         rdms_u = all_roi_rdms.get(roi, {}).get("unconscious", [])
 
@@ -117,19 +124,19 @@ def run(
             gw_cu.state = "conscious_vs_unconscious"; gw_cu.roi_or_layer = roi
             phase3_plotter.plot_inter_state_gw_matrix(gw_cu, roi=roi)
 
-    # ── Feature 3a – ρ violin plots ───────────────────────────────────────
+    # ── Feature 3a – ρ violin plots ──────────────────────────────────────
     results_by_roi = {
         roi: {
             state: all_rsa_results.get(roi, {}).get(state, [])
             for state in ("conscious", "unconscious")
         }
-        for roi in settings.active_roi_names if roi in all_rsa_results  # ← active_roi_names
+        for roi in settings.active_roi_names if roi in all_rsa_results
     }
     if results_by_roi:
         phase3_plotter.plot_rho_violins(results_by_roi, save_name="phase3_rho_violins.png")
         logger.info("Saved ρ violin plots.")
 
-    # ── Feature 3b – ρ vs. p-value scatter ───────────────────────────────
+    # ── Feature 3b – ρ vs. p-value scatter ─────────────────────────────
     all_c = [r for roi in all_rsa_results for r in all_rsa_results[roi].get("conscious",   [])]
     all_u = [r for roi in all_rsa_results for r in all_rsa_results[roi].get("unconscious", [])]
     if all_c or all_u:
@@ -141,16 +148,16 @@ def run(
         )
         logger.info("Saved ρ vs. p-value scatter.")
 
-    # ── Feature 3c – noise ceiling overlay bars ───────────────────────────
+    # ── Feature 3c – noise ceiling overlay bars ─────────────────────────
     if summary:
         phase3_plotter.plot_noise_ceiling_bars(
             summary=summary,
-            roi_names=settings.active_roi_names,           # ← active_roi_names
+            roi_names=settings.active_roi_names,
             save_name="phase3_noise_ceiling_bars.png",
         )
         logger.info("Saved noise ceiling bar chart.")
 
-    # ── Summary bar chart (backward compat) ──────────────────────────────
+    # ── Summary bar chart (backward compat) ────────────────────────────
     c_sum = [
         RSAResult(subject_a="avg", subject_b="avg", roi_or_layer=roi,
                   state_a="conscious", state_b="conscious",
@@ -166,7 +173,7 @@ def run(
     if c_sum or u_sum:
         summary_plotter.plot_rsa_by_roi(
             c_sum, u_sum,
-            roi_names=settings.active_roi_names,           # ← active_roi_names
+            roi_names=settings.active_roi_names,
             save_name="phase3_rsa_by_roi.png",
             subdir="phase3_rsa",
         )
