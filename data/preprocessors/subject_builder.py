@@ -15,6 +15,7 @@ Adapted for the flat ds003927 derivative layout::
 from __future__ import annotations
 
 import logging
+import gc
 from pathlib import Path
 
 import numpy as np
@@ -104,6 +105,12 @@ class SubjectBuilder:
             bold     = self._fmri.load_bold(nifti_path)
             patterns = self._fmri.extract_trial_patterns(bold, full_mask, volumes)
             patterns = self._fmri.zscore_patterns(patterns)
+
+            # ── IMMEDIATE MEMORY FLUSH ──
+            # Destroy the disk-backed object to free file handles and RAM
+            del bold
+            gc.collect()
+            # ────────────────────────────
 
             roi_dir = self._resolve_roi_dir(subject_root)
 

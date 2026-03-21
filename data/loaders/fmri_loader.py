@@ -31,8 +31,9 @@ class FMRILoader:
     # ── Public API ───────────────────────────────────────────────────────────
 
     def load_bold(self, nifti_path: str | Path) -> np.ndarray:
-        """Load 4-D NIfTI and return (X, Y, Z, T) float32 array."""
+        """Load 4-D NIfTI entirely into RAM for fast unzipping and slicing."""
         img = nib.load(str(nifti_path))
+        # This unzips and loads the ~1GB array into RAM quickly
         data = np.asarray(img.dataobj, dtype=np.float32)
         logger.info("Loaded BOLD %s → shape %s", nifti_path, data.shape)
         return data
@@ -45,18 +46,13 @@ class FMRILoader:
         return mask
 
     def extract_trial_patterns(
-        self,
-        bold: np.ndarray,          # (X, Y, Z, T)
-        mask: np.ndarray,          # (X, Y, Z) bool
-        trial_volumes: Sequence[int],   # volume_interest indices (0-based)
+            self,
+            bold: np.ndarray,  # Back to expecting an in-memory numpy array
+            mask: np.ndarray,
+            trial_volumes: Sequence[int],
     ) -> np.ndarray:
         """
-        For each trial, average the BOLD signal across the HRF window
-        and return masked voxel patterns.
-
-        Returns
-        -------
-        np.ndarray of shape (n_trials, n_voxels)
+        Average the in-memory BOLD signal across the HRF window.
         """
         n_timepoints = bold.shape[-1]
         n_trials = len(trial_volumes)
@@ -68,13 +64,11 @@ class FMRILoader:
             start = int(vol_idx)
             end = min(start + self._n_hrf_vols, n_timepoints)
             if start >= n_timepoints:
-                logger.warning(
-                    "Trial %d: volume index %d exceeds timeseries length %d – skipping",
-                    i, start, n_timepoints,
-                )
                 continue
-            window = bold[..., start:end]          # (X, Y, Z, window)
-            avg_vol = window.mean(axis=-1)          # (X, Y, Z)
+
+            # Fast in-memory slicing
+            window = bold[..., start:end]
+            avg_vol = window.mean(axis=-1)
             patterns[i] = avg_vol[mask]
 
         return patterns

@@ -70,13 +70,17 @@ def run(
         with open(ckpt, "rb") as fh:
             return pickle.load(fh)
 
-    decoder   = SVMDecoder(
+    decoder = SVMDecoder(
         C=settings.rsa.get("svm_C", 1.0),
         n_perms=settings.rsa.get("svm_n_perms", 10_000),
         alpha=settings.rsa.get("alpha", 0.05),
+        n_jobs=-1
     )
+    
     plotter   = SVMPlotter(settings)
-    roi_names = settings.active_roi_names
+    # ── THE FIX: Filter out the massive wholebrain array ──
+    roi_names = [roi for roi in settings.active_roi_names if roi != "wholebrain"]
+    # ──────────────────────────────────────────────────────
 
     all_results: dict[str, dict[str, list[SVMResult]]] = {}
     # structure: subject_id → state → list[SVMResult]
