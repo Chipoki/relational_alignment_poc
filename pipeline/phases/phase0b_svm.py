@@ -70,11 +70,16 @@ def run(
         with open(ckpt, "rb") as fh:
             return pickle.load(fh)
 
+    ckpt_dir = _checkpoint_path(settings).parent  # already the checkpoints/svm/ dir
+
     decoder = SVMDecoder(
         C=settings.rsa.get("svm_C", 1.0),
         n_perms=settings.rsa.get("svm_n_perms", 10_000),
         alpha=settings.rsa.get("alpha", 0.05),
-        n_jobs=-1
+        n_jobs=8,
+        cache_dir=ckpt_dir,
+        max_iter=50_000,
+        tol=1e-3,
     )
     
     plotter   = SVMPlotter(settings)
