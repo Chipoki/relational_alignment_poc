@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Sequence
-
+import copy
 import numpy as np
 import torch
 import torch.nn as nn
@@ -195,22 +195,21 @@ class FCNNEmbedder:
         return embeddings
 
     def finetune(
-        self,
-        train_paths: list[Path],
-        train_labels: list[int],
-        n_epochs: int = 30,
-        lr: float = 1e-4,
-        checkpoint_path: str | Path | None = None,
+            self,
+            train_paths: list[Path],
+            train_labels: list[int],
+            val_paths: list[Path] = None,
+            val_labels: list[int] = None,
+            max_epochs: int = 200,
+            lr: float = 1e-4,
+            checkpoint_path: str | Path | None = None,
     ) -> None:
         """
         Fine-tune the hidden + classifier layers on clear images.
         Convolutional backbone remains frozen.
 
-        If ``checkpoint_path`` (or the instance-level ``self._checkpoint_path``)
-        already exists on disk the method returns immediately without training,
-        ensuring idempotent pipeline runs.
-
-        After training completes the checkpoint is saved automatically.
+        Implements early stopping (every 10 epochs, 5 non-improving checks)
+        and batch-wise noise augmentation based on the paper.
         """
         save_path = Path(checkpoint_path) if checkpoint_path is not None else self._checkpoint_path
 
@@ -219,12 +218,11 @@ class FCNNEmbedder:
             logger.info(
                 "FCNN checkpoint already exists at %s – skipping fine-tuning.", save_path
             )
-            # Ensure weights are loaded (may already be loaded from __init__)
             self._load_checkpoint(save_path)
             self._model.eval()
             return
 
-        logger.info("Starting FCNN fine-tuning for %d epochs (lr=%.1e)…", n_epochs, lr)
+        logger.info("Starting FCNN fine-tuning (max %d epochs, lr=%.1e)…", max_epochs, lr)
 
         self._model.train()
         for p in list(self._model.hidden.parameters()) + list(self._model.classifier.parameters()):
@@ -236,30 +234,101 @@ class FCNNEmbedder:
         )
         criterion = nn.CrossEntropyLoss()
 
-        dataset = _ImageDataset(train_paths, self._transform)
-        loader = DataLoader(dataset, batch_size=self._batch_size, shuffle=True)
+        train_dataset = _ImageDataset(train_paths, self._transform)
+        train_loader = DataLoader(train_dataset, batch_size=self._batch_size, shuffle=True)
 
-        for epoch in range(n_epochs):
+        val_loader = None
+        if val_paths and val_labels:
+            val_dataset = _ImageDataset(val_paths, self._transform)
+            val_loader = DataLoader(val_dataset, batch_size=self._batch_size, shuffle=False)
+
+        best_val_loss = float('inf')
+        patience_counter = 0
+        best_model_state = None
+
+        for epoch in range(max_epochs):
             epoch_loss = 0.0
-            for imgs, indices in loader:
+            self._model.train()
+
+            for imgs, indices in train_loader:
                 imgs = imgs.to(self._device)
                 labels_batch = torch.tensor(
                     [train_labels[i] for i in indices], dtype=torch.long
                 ).to(self._device)
+
+                # --- FIX 2: Noise-Augmented Training Batches ---
+                # Calculate batch mean and std per channel
+                b_mean = imgs.mean(dim=[0, 2, 3], keepdim=True)
+                b_std = imgs.std(dim=[0, 2, 3], keepdim=True)
+
+                # Sample 1 noise image using the batch's distribution
+                noise_img = torch.randn(1, imgs.size(1), imgs.size(2), imgs.size(3), device=self._device)
+                noise_img = (noise_img * b_std) + b_mean
+
+                # Append the noise image and assign a dummy label (e.g., 0)
+                imgs = torch.cat([imgs, noise_img], dim=0)
+                dummy_label = torch.tensor([0], dtype=torch.long, device=self._device)
+                labels_batch = torch.cat([labels_batch, dummy_label], dim=0)
+                # -----------------------------------------------
+
                 optimizer.zero_grad()
                 _, logits = self._model(imgs)
                 loss = criterion(logits, labels_batch)
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item()
-            if (epoch + 1) % 5 == 0:
-                logger.info("Epoch %d/%d – loss=%.4f", epoch + 1, n_epochs, epoch_loss)
+
+            # --- FIX 1: Early Stopping every 10 epochs ---
+            if val_loader and (epoch + 1) % 10 == 0:
+                self._model.eval()
+                val_loss = 0.0
+
+                with torch.no_grad():
+                    for v_imgs, v_indices in val_loader:
+                        v_imgs = v_imgs.to(self._device)
+                        v_labels_batch = torch.tensor(
+                            [val_labels[i] for i in v_indices], dtype=torch.long
+                        ).to(self._device)
+
+                        _, v_logits = self._model(v_imgs)
+                        batch_loss = criterion(v_logits, v_labels_batch)
+                        val_loss += batch_loss.item()
+
+                val_loss /= len(val_loader)
+                logger.info("Epoch %d/%d – Train Loss: %.4f | Val Loss: %.4f",
+                            epoch + 1, max_epochs, epoch_loss / len(train_loader), val_loss)
+
+                # Check stopping criterion
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    patience_counter = 0
+                    best_model_state = copy.deepcopy(self._model.state_dict())
+                else:
+                    patience_counter += 1
+                    logger.info("Validation loss did not decrease. Patience: %d/5", patience_counter)
+
+                if patience_counter >= 5:
+                    logger.info("Early stopping triggered at epoch %d. Restoring best weights.", epoch + 1)
+                    if best_model_state:
+                        self._model.load_state_dict(best_model_state)
+                    break
+            elif not val_loader and (epoch + 1) % 10 == 0:
+                # Fallback if no val set is provided
+                logger.info("Epoch %d/%d – Train Loss: %.4f", epoch + 1, max_epochs, epoch_loss / len(train_loader))
 
         self._model.eval()
 
         # ── Save checkpoint ───────────────────────────────────────────────
         save_path.parent.mkdir(parents=True, exist_ok=True)
-        torch.save(self._model.state_dict(), str(save_path))
+
+        # Save the best model state if validation was used, otherwise save current state
+        state_to_save = best_model_state if best_model_state else self._model.state_dict()
+        torch.save(state_to_save, str(save_path))
+
+        # Ensure the model in memory has the best weights loaded
+        if best_model_state:
+            self._model.load_state_dict(best_model_state)
+
         logger.info("FCNN checkpoint saved → %s", save_path)
 
     # ── Private helpers ──────────────────────────────────────────────────────
