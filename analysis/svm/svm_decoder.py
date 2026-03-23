@@ -61,7 +61,7 @@ from sklearn.dummy import DummyClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.preprocessing import StandardScaler, MinMaxScaler
 from sklearn.svm import LinearSVC
 
 logger = logging.getLogger(__name__)
@@ -124,11 +124,10 @@ def _eval_fold(X_train_all, y_train_all, X_test_all, y_test_all,
     X_te = X_te[:, var_mask]
 
     clf = Pipeline([
-        ("scaler", StandardScaler()),
+        ("scaler", MinMaxScaler()),
         ("svm",    LinearSVC(
             penalty="l1", loss="squared_hinge", dual=False,
-            C=C, tol=tol, max_iter=max_iter, random_state=_RNG_SEED,
-            class_weight='balanced'
+            C=C, tol=tol, max_iter=max_iter, random_state=_RNG_SEED
         )),
     ])
 

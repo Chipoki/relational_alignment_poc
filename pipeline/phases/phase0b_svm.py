@@ -76,7 +76,7 @@ def run(
         C=settings.rsa.get("svm_C", 1.0),
         n_perms=settings.rsa.get("svm_n_perms", 10_000),
         alpha=settings.rsa.get("alpha", 0.05),
-        n_jobs=4,
+        n_jobs=-1,
         cache_dir=ckpt_dir,
         max_iter=50_000,
         tol=1e-3,
