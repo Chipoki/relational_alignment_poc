@@ -126,4 +126,4 @@ class FMRILoader:
         bold = self.load_bold(nifti_path)
         mask = self.load_mask(mask_path)
         patterns = self.extract_trial_patterns(bold, mask, trial_volumes)
-        return self.zscore_patterns(patterns)
+        return patterns

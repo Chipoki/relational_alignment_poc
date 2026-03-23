@@ -61,7 +61,7 @@ from sklearn.dummy import DummyClassifier
 from sklearn.exceptions import ConvergenceWarning
 from sklearn.metrics import roc_auc_score
 from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import MinMaxScaler
+from sklearn.preprocessing import StandardScaler
 from sklearn.svm import LinearSVC
 
 logger = logging.getLogger(__name__)
@@ -124,10 +124,11 @@ def _eval_fold(X_train_all, y_train_all, X_test_all, y_test_all,
     X_te = X_te[:, var_mask]
 
     clf = Pipeline([
-        ("scaler", MinMaxScaler()),
+        ("scaler", StandardScaler()),
         ("svm",    LinearSVC(
             penalty="l1", loss="squared_hinge", dual=False,
             C=C, tol=tol, max_iter=max_iter, random_state=_RNG_SEED,
+            class_weight='balanced'
         )),
     ])
 
@@ -140,6 +141,8 @@ def _eval_fold(X_train_all, y_train_all, X_test_all, y_test_all,
 
     scores = clf.decision_function(X_te)
     auc    = roc_auc_score(y_te, scores)
+    train_scores = clf.decision_function(X_tr)
+    train_auc = roc_auc_score(y_tr, train_scores)
 
     dummy = DummyClassifier(strategy="stratified", random_state=_RNG_SEED)
     dummy.fit(X_tr, y_tr)
@@ -147,6 +150,7 @@ def _eval_fold(X_train_all, y_train_all, X_test_all, y_test_all,
 
     return {
         "true_auc":   auc,
+        "train_auc": train_auc,
         "chance_auc": chance_auc,
         "n_iter":     fold_iters,
         "warned":     fold_warned,
@@ -317,6 +321,7 @@ class SVMDecoder:
         living_items    = np.unique(item_ids[labels == 1])
         nonliving_items = np.unique(item_ids[labels == 0])
         folds = []
+
         for liv, nonliv in product(living_items, nonliving_items):
             test_mask  = (item_ids == liv) | (item_ids == nonliv)
             train_mask = ~test_mask
@@ -325,6 +330,7 @@ class SVMDecoder:
                     or len(np.unique(labels[test_mask])) < 2):
                 continue
             folds.append((np.where(train_mask)[0], np.where(test_mask)[0]))
+
         return folds
 
     def _leave_one_pair_out_folds_cross(
@@ -372,7 +378,7 @@ class SVMDecoder:
           = 8 GB instantaneous peak before a single SVM is trained.  4 workers
           is the empirically safe ceiling for typical fMRI pattern sizes.
         """
-        true_aucs, chance_aucs, n_iters = [], [], []
+        true_aucs, chance_aucs, train_aucs, n_iters = [], [], [], []
         n_warn = 0
 
         logger.info("    [%s] dispatching %d folds to %d loky workers …", desc, len(folds), self._n_jobs)
@@ -395,14 +401,16 @@ class SVMDecoder:
                 continue
 
             true_aucs.append(res["true_auc"])
+            train_aucs.append(res["train_auc"])
             chance_aucs.append(res["chance_auc"])
             n_iters.append(res["n_iter"])
             if res["warned"]:
                 n_warn += 1
 
         logger.info(
-            "    [%s] %d folds collected | mean_AUC=%.4f | conv_warns=%d/%d",
+            "    [%s] %d folds collected | mean_Train_AUC=%.4f | mean_Test_AUC=%.4f | conv_warns=%d/%d",
             desc, len(true_aucs),
+            float(np.mean(train_aucs)) if train_aucs else float("nan"),
             float(np.mean(true_aucs)) if true_aucs else float("nan"),
             n_warn, len(folds),
         )

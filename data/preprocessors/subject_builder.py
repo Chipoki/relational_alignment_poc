@@ -93,8 +93,7 @@ class SubjectBuilder:
 
             events_df = self._behavioral.load(csv_path)
 
-            vol_col = self._settings.data["stimuli_csv_col"]["volume"]
-            volumes = events_df[vol_col].dropna().astype(int).tolist()
+            # since the volume & behavioral CSVs are of the same size and are presumably correspondingly pre-ordered
             volumes = list(range(len(events_df)))
 
             logger.info(
@@ -104,7 +103,6 @@ class SubjectBuilder:
 
             bold     = self._fmri.load_bold(nifti_path)
             patterns = self._fmri.extract_trial_patterns(bold, full_mask, volumes)
-            patterns = self._fmri.zscore_patterns(patterns)
 
             # ── IMMEDIATE MEMORY FLUSH ──
             # Destroy the disk-backed object to free file handles and RAM

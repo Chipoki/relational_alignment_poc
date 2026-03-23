@@ -76,16 +76,15 @@ def run(
         C=settings.rsa.get("svm_C", 1.0),
         n_perms=settings.rsa.get("svm_n_perms", 10_000),
         alpha=settings.rsa.get("alpha", 0.05),
-        n_jobs=8,
+        n_jobs=4,
         cache_dir=ckpt_dir,
         max_iter=50_000,
         tol=1e-3,
     )
     
     plotter   = SVMPlotter(settings)
-    # ── THE FIX: Filter out the massive wholebrain array ──
+    # Filter out the massive wholebrain array
     roi_names = [roi for roi in settings.active_roi_names if roi != "wholebrain"]
-    # ──────────────────────────────────────────────────────
 
     all_results: dict[str, dict[str, list[SVMResult]]] = {}
     # structure: subject_id → state → list[SVMResult]
