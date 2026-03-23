@@ -104,6 +104,20 @@ class SubjectBuilder:
             bold     = self._fmri.load_bold(nifti_path)
             patterns = self._fmri.extract_trial_patterns(bold, full_mask, volumes)
 
+            # Run-wise z-scoring: normalize each voxel within each run independently
+            run_ids = events_df.groupby(['session', 'run']).ngroup().values  # integer run index per trial
+
+            patterns_normed = patterns.copy()
+            for run_idx in np.unique(run_ids):
+                mask_r = run_ids == run_idx
+                run_data = patterns[mask_r]  # shape (n_trials_in_run, n_voxels)
+                mean_r = run_data.mean(axis=0)
+                std_r = run_data.std(axis=0)
+                std_r[std_r < 1e-8] = 1.0  # avoid division by zero
+                patterns_normed[mask_r] = (run_data - mean_r) / std_r
+
+            patterns = patterns_normed
+
             # ── IMMEDIATE MEMORY FLUSH ──
             # Destroy the disk-backed object to free file handles and RAM
             del bold
