@@ -91,7 +91,9 @@ class SubjectBuilder:
             )
             subject.fmri_paths.append(nifti_path)
 
+            # Load and immediately heal continuity/IDs
             events_df = self._behavioral.load(csv_path)
+            events_df = self._enforce_continuity_and_ids(events_df)
 
             # since the volume & behavioral CSVs are of the same size and are presumably correspondingly pre-ordered
             volumes = list(range(len(events_df)))
@@ -221,3 +223,50 @@ class SubjectBuilder:
         if rois_subdir.exists():
             return rois_subdir
         return subject_root
+
+    @staticmethod
+    def _enforce_continuity_and_ids(df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Scans for broken run continuities within each session and fixes them
+        by enforcing chronological sequential numbering. Finally, unconditionally
+        recalculates all IDs to a safer convention (session*10000 + run*100 + trial)
+        to prevent run > 9 overflow and ensure global uniformity.
+        """
+        df_out = df.copy()
+
+        # 1. Fix run continuities session by session
+        sessions = df_out['session'].drop_duplicates().tolist()
+
+        for sess in sessions:
+            mask_sess = df_out['session'] == sess
+
+            # Get unique runs in exact chronological order of their appearance
+            ordered_runs = df_out.loc[mask_sess, 'run'].drop_duplicates().tolist()
+
+            if not ordered_runs:
+                continue
+
+            # Define what the sequence SHOULD be (starting from the first observed run)
+            first_run = ordered_runs[0]
+            expected_runs = list(range(int(first_run), int(first_run) + len(ordered_runs)))
+
+            # Check for continuity breaks (e.g., [5, 61, 62, 7] != [5, 6, 7, 8])
+            if ordered_runs != expected_runs:
+                run_mapping = {old: new for old, new in zip(ordered_runs, expected_runs)}
+
+                msg = f"  -> [Session {sess}] Broken run continuity detected. Applying mapping: {run_mapping}"
+                logger.info(msg)
+                print(msg)
+
+                # Apply mapping safely
+                df_out.loc[mask_sess, 'run'] = df_out.loc[mask_sess, 'run'].map(run_mapping).fillna(df_out['run'])
+
+        # 2. Unconditionally apply the new ID convention to the ENTIRE DataFrame
+        # Convention: session * 10000 + run * 100 + trials
+        df_out['id'] = (
+                df_out['session'] * 10000 +
+                df_out['run'] * 100 +
+                df_out['trials']
+        )
+
+        return df_out
