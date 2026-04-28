@@ -1,0 +1,50 @@
+name: soto-author-pipeline
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.10
+  - pip
+  - git
+  - numpy=1.26.*
+  - scipy=1.11.*
+  - pandas=2.1.*
+  - scikit-learn=1.4.*
+  - matplotlib=3.8.*
+  - seaborn=0.13.*
+  - nibabel=5.2.*
+  - nilearn=0.10.*
+  - nipype=1.8.*
+  - networkx=2.8.*
+  - pydot
+  - graphviz
+  - traits
+  - simplejson
+  - tqdm
+  - joblib
+  - psutil
+  - h5py
+  - pytables
+
+# ICA-AROMA is intentionally NOT installed via pip here.
+# The original maartenmennes/ICA-AROMA repository is not a Python package
+# (no setup.py / pyproject.toml), so pip install from git fails.
+# After creating the env, install ICA-AROMA manually by cloning or downloading it,
+# then add the folder containing ICA_AROMA.py to PATH, for example:
+#
+#   git clone https://github.com/maartenmennes/ICA-AROMA.git $HOME/tools/ICA-AROMA
+#   chmod +x $HOME/tools/ICA-AROMA/ICA_AROMA.py
+#   export PATH=$HOME/tools/ICA-AROMA:$PATH
+#
+# External dependencies still required outside conda:
+#   - FSL installed and sourced
+#   - FreeSurfer installed and sourced
+#
+# Example shell setup before running the pipeline:
+#   export FSLDIR=/path/to/fsl
+#   source ${FSLDIR}/etc/fslconf/fsl.sh
+#   export PATH=${FSLDIR}/bin:${PATH}
+#   export FREESURFER_HOME=/path/to/freesurfer
+#   source ${FREESURFER_HOME}/SetUpFreeSurfer.sh
+#   export PATH=$HOME/tools/ICA-AROMA:${PATH}
+#   export FSLOUTPUTTYPE=NIFTI_GZ
