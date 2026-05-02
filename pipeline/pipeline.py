@@ -63,37 +63,68 @@ class POCPipeline:
     # ── Subject loading ──────────────────────────────────────────────────────
 
     def load_subjects(self, subject_ids: list[str] | None = None) -> None:
-        """Discover and load all subjects, then register actual ROIs with settings."""
-        root = Path(self._cfg.data["root"])
-        if not root.exists():
-            raise FileNotFoundError(
-                f"Data root not found: {root}\n"
-                "Please set data.root in config/config.yaml."
+        """
+        Discover and load all subjects using the active data_source mode.
+
+        In ``derivatives`` mode subjects are found under
+        ``settings.derivatives_root/<sub-XX>/``.
+        In ``replication`` mode subjects are found under
+        ``settings.replication_root/MRI/<sub-XX>/``.
+
+        After loading, the actual ROI set present in the data is registered
+        with settings so all downstream phases use it.
+        """
+        cfg = self._cfg
+        ids = subject_ids or cfg.subject_ids or []
+
+        if cfg.data_source == "derivatives":
+            root = cfg.derivatives_root
+            logger.info(
+                "Loading %d subjects from derivatives root: %s", len(ids), root
             )
+            if not root.exists():
+                raise FileNotFoundError(
+                    f"derivatives_root does not exist: {root}\n"
+                    "Check data.derivatives_root in config/config.yaml."
+                )
+            for sid in ids:
+                subject_dir = root / sid
+                if not subject_dir.exists():
+                    logger.warning("Subject directory not found: %s – skipping", subject_dir)
+                    continue
+                try:
+                    subj = self._subject_builder.build(subject_dir, sid)
+                    self._subjects.append(subj)
+                    logger.info("✓ Loaded %s", subj)
+                except Exception as exc:
+                    logger.error("✗ Failed to load subject %s: %s", sid, exc)
 
-        ids = subject_ids or self._cfg.data.get("subject_ids") or []
-        if not ids:
-            ids = sorted(p.name for p in root.iterdir() if p.is_dir())
-        if not ids:
-            raise ValueError(f"No subject directories found under {root}")
-
-        logger.info("Loading %d subjects: %s", len(ids), ids)
-        for sid in ids:
-            try:
-                subj = self._subject_builder.build(root / sid, sid)
-                self._subjects.append(subj)
-                logger.info("✓ Loaded %s", subj)
-            except Exception as exc:
-                logger.error("✗ Failed to load subject %s: %s", sid, exc)
+        else:  # replication mode
+            mri_root = cfg.replication_root / "MRI"
+            logger.info(
+                "Loading %d subjects from replication MRI root: %s", len(ids), mri_root
+            )
+            if not mri_root.exists():
+                raise FileNotFoundError(
+                    f"replication MRI root does not exist: {mri_root}\n"
+                    "Check data.replication_root in config/config.yaml."
+                )
+            for sid in ids:
+                try:
+                    # In replication mode SubjectBuilder._build_replication()
+                    # resolves all paths internally; subject_root arg is unused.
+                    subj = self._subject_builder.build(mri_root / sid, sid)
+                    self._subjects.append(subj)
+                    logger.info("✓ Loaded %s", subj)
+                except Exception as exc:
+                    logger.error("✗ Failed to load subject %s: %s", sid, exc)
 
         logger.info(
-            "Loaded %d / %d subjects successfully", len(self._subjects), len(ids)
+            "Loaded %d / %d subjects successfully",
+            len(self._subjects), len(ids)
         )
 
-        # ── Register the ROIs that actually exist in the data ─────────────
-        # This makes settings.active_roi_names authoritative for all downstream
-        # phases.  wholebrain is always included; any FreeSurfer region masks
-        # found in func_masks/ are added on top.
+        # Register the ROIs that actually exist in the loaded data
         self._subject_builder.register_rois_with_settings()
 
     # ── Phase dispatch ───────────────────────────────────────────────────────
@@ -131,7 +162,7 @@ class POCPipeline:
         return phase4_cross_modality.run(
             self._cfg, self._human_rdms, self._fcnn_rdms,
             self._rsa_analyzer, self._gw_aligner,
-            noise_ceiling=self._noise_ceiling,   # wired up: was missing before
+            noise_ceiling=self._noise_ceiling,
         )
 
     def phase5_structural_invariance(self) -> dict:
@@ -150,10 +181,10 @@ class POCPipeline:
     # ── Full pipeline ────────────────────────────────────────────────────────
 
     def run(self, subject_ids=None, stimulus_image_dir=None) -> None:
-        logger.info("Starting POC Pipeline")
+        logger.info("Starting POC Pipeline  (data_source=%r)", self._cfg.data_source)
         self.load_subjects(subject_ids)
         self.phase0_finetune_fcnn(stimulus_image_dir)   # Phase 0.1
-        self.phase0b_svm_decoding()                     # Phase 0.2 – right after FCNN
+        self.phase0b_svm_decoding()                     # Phase 0.2
         self.phase1_extract_embeddings(stimulus_image_dir)
         self.phase2_build_rdms()
         self.phase3_inter_subject_rsa()

@@ -13,18 +13,34 @@ Produces:
   • Group summary bar chart (all states)
   • stats/phase0b_svm.json with all numbers
 
+SVM fidelity to aroma_decoding_pipeline_v11.py
+----------------------------------------------
+The SVMDecoder constructed here uses the same hyperparameters as
+build_mei_svm_pipeline() in v11:
+    LinearSVC(penalty='l1', dual=False, tol=1e-3, max_iter=10000,
+              class_weight='balanced', random_state=12345)
+  preceded by VarianceThreshold() and StandardScaler().
+
+All three hyperparameters (C, tol, random_state) are read from the
+``rsa`` section of config.yaml so they can be changed in one place
+without touching Python code:
+
+    rsa:
+      svm_C:            1.0
+      svm_n_perms:      10000
+      svm_tol:          1.0e-3
+      svm_max_iter:     10000
+      svm_random_state: 12345
+
 Idempotency
 -----------
 If ``checkpoints/svm/phase0b_svm_results.pkl`` already exists the phase
-loads it and returns immediately, skipping all SVM training and permutation
-tests.  Delete the file (or the whole checkpoints/svm/ directory) to force
-a full re-run.
+loads it and returns immediately, skipping all SVM training.
 
 Checkpointing
 -------------
-After the per-subject loop converges, the complete ``all_results`` dict is
-serialised to ``checkpoints/svm/phase0b_svm_results.pkl`` via ``joblib``.
-This mirrors the FCNN checkpoint written by Phase 0.1.
+After the per-subject loop the complete ``all_results`` dict is serialised
+to ``checkpoints/svm/phase0b_svm_results.pkl`` via pickle.
 """
 from __future__ import annotations
 
@@ -46,7 +62,7 @@ _CHECKPOINT_FILE   = "phase0b_svm_results.pkl"
 
 
 def _checkpoint_path(settings: Settings) -> Path:
-    ckpt_dir = Path(getattr(settings, "checkpoints_dir", "checkpoints")) / _CHECKPOINT_SUBDIR
+    ckpt_dir = settings.checkpoints_dir / _CHECKPOINT_SUBDIR
     ckpt_dir.mkdir(parents=True, exist_ok=True)
     return ckpt_dir / _CHECKPOINT_FILE
 
@@ -54,13 +70,13 @@ def _checkpoint_path(settings: Settings) -> Path:
 def run(
     settings: Settings,
     subjects: list,
-    human_rdms: dict,   # passed for stimulus metadata; raw patterns via subjects
+    human_rdms: dict,   # passed for potential stimulus metadata; raw patterns via subjects
 ) -> dict:
     logger.info("=" * 60)
     logger.info("PHASE 0.2 – SVM Decoding  (Mei et al. 2022)")
     logger.info("=" * 60)
 
-    # ── Idempotency guard ─────────────────────────────────────────────────
+    # ── Idempotency guard ──────────────────────────────────────────────────
     ckpt = _checkpoint_path(settings)
     if ckpt.exists():
         logger.info(
@@ -70,20 +86,21 @@ def run(
         with open(ckpt, "rb") as fh:
             return pickle.load(fh)
 
-    ckpt_dir = _checkpoint_path(settings).parent  # already the checkpoints/svm/ dir
-
+    # ── Build SVMDecoder with v11-matching hyperparameters ─────────────────
+    rsa_cfg = settings.rsa  # dict from config.yaml rsa: section
     decoder = SVMDecoder(
-        C=settings.rsa.get("svm_C", 1.0),
-        n_perms=settings.rsa.get("svm_n_perms", 10_000),
-        alpha=settings.rsa.get("alpha", 0.05),
-        n_jobs=-1,
-        cache_dir=ckpt_dir,
-        max_iter=50_000,
-        tol=1e-3,
+        C=float(rsa_cfg.get("svm_C", 1.0)),
+        n_perms=int(rsa_cfg.get("svm_n_perms", 10_000)),
+        alpha=float(rsa_cfg.get("alpha", 0.05)),
+        tol=float(rsa_cfg.get("svm_tol", 1e-3)),
+        max_iter=int(rsa_cfg.get("svm_max_iter", 10_000)),
+        rng_seed=int(rsa_cfg.get("svm_random_state", 12345)),
+        n_jobs=4,           # safe default; see SVMDecoder docstring
+        cache_dir=ckpt.parent,  # checkpoints/svm/
     )
-    
+
     plotter   = SVMPlotter(settings)
-    # Filter out the massive wholebrain array
+    # Exclude the massive wholebrain array from per-ROI SVM decoding
     roi_names = [roi for roi in settings.active_roi_names if roi != "wholebrain"]
 
     all_results: dict[str, dict[str, list[SVMResult]]] = {}
@@ -96,7 +113,7 @@ def run(
         c_data = getattr(subj, "conscious",   None)
         u_data = getattr(subj, "unconscious", None)
 
-        # ── Within-state decoding ─────────────────────────────────────────
+        # ── Within-state decoding ───────────────────────────────────────────
         for state, vis_data in [("conscious", c_data), ("unconscious", u_data)]:
             if vis_data is None:
                 continue
@@ -117,7 +134,7 @@ def run(
                 )
                 all_results[sid][state].append(result)
 
-            # Bonferroni correction across ROIs for this subject×state
+            # Bonferroni correction across ROIs for this subject × state
             decoder.apply_bonferroni(
                 all_results[sid][state], n_rois=len(roi_names)
             )
@@ -128,7 +145,7 @@ def run(
                 len(all_results[sid][state]),
             )
 
-        # ── Cross-state generalisation ────────────────────────────────────
+        # ── Cross-state generalisation ──────────────────────────────────────
         if c_data is not None and u_data is not None:
             for roi in roi_names:
                 c_patterns = c_data.bold_patterns.get(roi)
@@ -160,7 +177,7 @@ def run(
                 len(all_results[sid]["c_to_u"]),
             )
 
-        # ── Per-subject figures ───────────────────────────────────────────
+        # ── Per-subject figures ─────────────────────────────────────────────
         for state in ("conscious", "unconscious"):
             plotter.plot_decoding_by_roi(
                 results=all_results[sid][state] + all_results[sid].get("c_to_u", []),
@@ -170,7 +187,7 @@ def run(
                 save_name=f"phase0b_svm_{sid}_{state}.png",
             )
 
-    # ── Cross-subject generalisation heatmap ─────────────────────────────
+    # ── Cross-subject generalisation heatmap ──────────────────────────────
     gen_by_subject = {
         sid: all_results[sid]["c_to_u"]
         for sid in all_results
@@ -198,18 +215,18 @@ def run(
             json_out[sid][state] = [
                 {
                     "roi":         r.roi,
-                    "mean_auc":    round(r.mean_auc, 4),
+                    "mean_auc":    round(r.mean_auc,    4),
                     "mean_chance": round(r.mean_chance, 4),
-                    "delta_auc":   round(r.delta_auc, 4),
-                    "p_value":     round(r.p_value, 5),
+                    "delta_auc":   round(r.delta_auc,   4),
+                    "p_value":     round(r.p_value,     5),
                     "significant": r.significant,
                     "n_folds":     r.n_folds,
                 }
                 for r in results
             ]
-    save_json(json_out, Path(settings.stats_dir) / "phase0b_svm.json")
+    save_json(json_out, settings.stats_dir / "phase0b_svm.json")
 
-    # ── Persist checkpoint (SVM "weights" / full result object) ───────────
+    # ── Persist checkpoint ────────────────────────────────────────────────
     with open(ckpt, "wb") as fh:
         pickle.dump(all_results, fh, protocol=pickle.HIGHEST_PROTOCOL)
     logger.info("SVM results checkpointed to %s", ckpt)

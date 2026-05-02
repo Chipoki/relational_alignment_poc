@@ -3,99 +3,130 @@
 #  Master Configuration
 # ============================================================
 
+# ── Data source selector ──────────────────────────────────────
+# "derivatives"  → use ds003927/derivatives/ (pre-stacked wholebrain_*.nii.gz
+#                  + wholebrain_*.csv; whole-brain BOLD already separated by
+#                  visibility state; ROI masks in func_masks/ if present)
+# "replication"  → use author_replication/MRI/ (per-run ICAed_filtered/filtered.nii.gz
+#                  + ctx-{lh,rh}-<roi>_BOLD.nii.gz bilateral masks in anat/ROI_BOLD/;
+#                  behavioural events read from ds003927/<sub>/ses-XX/func/*.tsv)
+data_source: "replication"   # <── toggle here: "derivatives" | "replication"
+
 # ── Data paths ────────────────────────────────────────────────
 data:
-  root: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/soto_data/ds003927/derivatives/"            # Root folder containing per-subject sub-folders
-  # ── Actual per-subject layout (ds003927 derivatives) ──────────────
-  # Each subject folder contains flat files at its root:
-  #   wholebrain_conscious.nii.gz   – 4D BOLD for conscious trials
-  #   wholebrain_unconscious.nii.gz – 4D BOLD for unconscious trials
-  #   wholebrain_glimpse.nii.gz     – 4D BOLD for glimpse trials
-  #   wholebrain_conscious.csv      – trial events for conscious trials
-  #   wholebrain_unconscious.csv    – trial events for unconscious trials
-  #   wholebrain_glimpse.csv        – trial events for glimpse trials
-  #   mask.nii.gz                   – single whole-brain binary mask
-  #   example_func.nii.gz           – reference functional image
-  #   anat/                         – anatomical directory (unused by pipeline)
-  # ──────────────────────────────────────────────────────────────────
-  subject_ids: []             # Leave empty to auto-discover from root
+  # --- derivatives mode root ---
+  # Layout: <derivatives_root>/<sub-XX>/
+  #   wholebrain_conscious.nii.gz / .csv
+  #   wholebrain_unconscious.nii.gz / .csv
+  #   mask.nii.gz
+  #   example_func.nii.gz
+  #   func_masks/<roi>_mask.nii.gz   (optional; whole-brain used if absent)
+  derivatives_root: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/soto_data/ds003927/derivatives"
+
+  # --- replication mode roots ---
+  # BOLD + ROI masks:
+  #   <replication_root>/MRI/<sub-XX>/func/session-<SS>/<sub-XX>_unfeat_run-<R>/
+  #     outputs/func/ICAed_filtered/filtered.nii.gz
+  #     outputs/func/MC/MCflirt.par
+  #   <replication_root>/MRI/<sub-XX>/anat/ROI_BOLD/
+  #     ctx-lh-<roi>_BOLD.nii.gz  (bilateral: union of lh + rh)
+  #     ctx-rh-<roi>_BOLD.nii.gz
+  replication_root: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/soto_data/author_replication"
+
+  # --- ds003927 BIDS root (always needed for raw event TSVs in replication mode) ---
+  # Layout: <ds003927_root>/<sub-XX>/ses-<SS>/func/
+  #   <sub-XX>_ses-<SS>_task-recog_run-<R>_events.tsv
+  # Also used as source of derivatives/ for "derivatives" mode.
+  ds003927_root: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/soto_data/ds003927"
+
+  subject_ids: []           # Leave empty to auto-discover from the active root
   n_subjects: 7
   n_sessions: 6
-  tr: 0.85                    # Repetition time in seconds
-  hrf_delay_seconds: 5.0      # Haemodynamic lag (approx. 4-7 s → 5-6 volumes at TR=0.85)
-  n_hrf_volumes: 1            # Number of volumes to average for HRF window (set to 1 when using "derivatives" dir, since values are already HRF-averaged)
-  stimuli_csv_col:            # Column name mappings in behavioural CSVs
-    label: "labels"
-    category: "targets"       # Living_Things / Nonliving_Things
-    visibility: "visibility"  # "conscious" / "unconscious" / "glimpse"
-    volume: "volume_interest"
-    onset: "onset"
-  # Visibility states to include in analysis (glimpse excluded per paper)
+  n_runs_per_session: 9     # Used in replication mode to iterate run folders
+  tr: 0.85                  # Repetition time in seconds
+  hrf_delay_seconds: 5.0
+  n_hrf_volumes: 1          # 1 when using derivatives (already HRF-averaged);
+                             # set higher for replication raw runs if needed
+
+  # Replication-mode pre-processing options (matching aroma_decoding_pipeline_v11)
+  replication_detrend: true         # nilearn.signal.clean(detrend=True) per run
+  replication_zscore_per_run: true  # temporal Z-score on sliced trials per run
+
+  stimuli_csv_col:
+    label:      "labels"
+    category:   "targets"
+    visibility: "visibility"
+    volume:     "volume_interest"
+    onset:      "onset"
   visibility_states:
     - "conscious"
     - "unconscious"
-  # File naming convention (wholebrain_<state>.nii.gz / .csv)
-  nifti_prefix: "wholebrain"
-  mask_filename: "mask.nii.gz"
+  nifti_prefix:   "wholebrain"
+  mask_filename:  "mask.nii.gz"
 
-# ── ROI names (matching FreeSurfer labels used in the paper) ──
+# ── ROI names (FreeSurfer aparc+aseg labels, without ctx-{lh,rh}- prefix) ─
+# Used in derivatives mode for func_masks/<roi>_mask.nii.gz lookup.
+# In replication mode these are discovered automatically from
+# author_replication/MRI/<sub>/anat/ROI_BOLD/ctx-lh-<roi>_BOLD.nii.gz.
 rois:
   - pericalcarine
   - lingual
-  - lateral_occipital
+  - lateraloccipital
   - fusiform
-  - inferior_temporal
+  - inferiortemporal
   - parahippocampal
   - precuneus
-  - inferior_parietal
-  - superior_parietal
-  - superior_frontal
-  - middle_frontal
-  - inferior_frontal
+  - inferiorparietal
+  - superiorparietal
+  - superiorfrontal
+  - rostralmiddlefrontal
+  - parsopercularis
+  - parsorbitalis
+  - parstriangularis
 
 # ── FCNN settings (Phase 1) ───────────────────────────────────
 fcnn:
-  backbone: "mobilenet_v2"    # Most informative hidden repr per paper
+  backbone: "mobilenet_v2"
   pretrained: true
-  noise_levels:               # Gaussian noise σ² values
+  noise_levels:
     clear: 0
-    chance: 300               # Approx ROC-AUC < 0.55 threshold
+    chance: 300
   n_noise_sessions: 20
   batch_size: 8
-  device: "cpu"               # Switch to "cuda" if GPU available
+  device: "cpu"
 
 # ── RDM settings (Phase 2) ────────────────────────────────────
 rdm:
-  distance: "spearman"        # 1 - Spearman correlation
+  distance: "spearman"
   n_stimuli: 96
 
-# ── RSA settings (Phase 4) ────────────────────────────────────
+# ── RSA / SVM settings (Phase 3 / Phase 0.2) ─────────────────
 rsa:
   n_permutations: 10000
   alpha: 0.05
-  correction: "bonferroni"    # or "fdr_bh"
+  correction: "bonferroni"
   seed: 42
+  # SVM hyperparameters (Mei et al. 2022 / aroma_decoding_pipeline_v11)
+  svm_C: 1.0
+  svm_n_perms: 10000
+  svm_tol: 1.0e-3
+  svm_max_iter: 10000
+  svm_random_state: 12345   # matches v11 random_state
 
-# ── Gromov-Wasserstein settings (Phases 4 & 5) ────────────────
+# ── Gromov-Wasserstein (Phases 4 & 5) ─────────────────────────
 gromov_wasserstein:
-  loss_fun: "square_loss"     # or "kl_loss"
+  loss_fun: "square_loss"
   armijo: false
   log: true
-  top_k: 5                    # For Top-k Matching Rate
+  top_k: 5
   n_permutations: 10000
 
 # ── Visualization ─────────────────────────────────────────────
 visualization:
-  output_dir: "figures"           # Relative to output parent_dir
+  output_dir: "figures"
   dpi: 150
   meta_mds_n_components: 2
 
 # ── Output ────────────────────────────────────────────────────
 output:
-  parent_dir: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/poc_output"           # Parent directory for all outputs
-  # Subdirectories will be created relative to parent_dir
-  # (Optional: override individual subdirectories if needed)
-  # results_dir: "results"
-  # rdm_dir: "results/rdms"
-  # embedding_dir: "results/embeddings"
-  # stats_dir: "results/stats"
+  parent_dir: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/poc_output"

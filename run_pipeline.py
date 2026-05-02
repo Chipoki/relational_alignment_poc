@@ -60,9 +60,14 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
-    args = _parse_args()
+    args     = _parse_args()
     settings = Settings(args.config)
-    setup_logging(level=args.log_level, log_file=str(Path(settings.log_dir) / "pipeline.log"))
+
+    # settings.log_dir is now a @property returning a Path
+    setup_logging(
+        level=args.log_level,
+        log_file=str(settings.log_dir / "pipeline.log"),
+    )
 
     pipeline = POCPipeline(settings)
 
@@ -73,7 +78,7 @@ def main() -> None:
     pipeline.load_subjects(args.subjects)
     dispatch = {
         "0":  lambda: pipeline.phase0_finetune_fcnn(args.stimulus_dir),
-        "0b": lambda: pipeline.phase0b_svm_decoding(),
+        "0b": pipeline.phase0b_svm_decoding,
         "1":  lambda: pipeline.phase1_extract_embeddings(args.stimulus_dir),
         "2":  pipeline.phase2_build_rdms,
         "3":  pipeline.phase3_inter_subject_rsa,

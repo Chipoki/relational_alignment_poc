@@ -1,4 +1,17 @@
-"""data/loaders/behavioral_loader.py – Load and validate behavioural CSV files."""
+"""data/loaders/behavioral_loader.py – Load and validate behavioural event files.
+
+Supports two file formats:
+  • CSV  (derivatives mode)  – wholebrain_<state>.csv produced by the authors'
+                               analysis pipeline; one row per trial already
+                               filtered to the relevant visibility state.
+  • TSV  (replication mode) – raw BIDS events files
+                               <sub>_ses-<SS>_task-recog_run-<R>_events.tsv;
+                               all trials mixed; visibility filter applied in
+                               SubjectBuilder per-run extraction.
+
+Expected columns (configurable via config):
+    onset, labels, targets, visibility, volume_interest, session, run, trials
+"""
 from __future__ import annotations
 
 from pathlib import Path
@@ -12,13 +25,10 @@ from config.settings import Settings
 
 class BehavioralLoader:
     """
-    Loads behavioural event CSV files produced by PsychoPy.
-
-    Expected columns (configurable via config):
-        onset, duration, labels, targets, visibility, volume_interest, session, run, id
+    Loads behavioural event CSV/TSV files produced by the experiment software.
     """
 
-    LIVING_LABEL = "Living_Things"
+    LIVING_LABEL    = "Living_Things"
     NONLIVING_LABEL = "Nonliving_Things"
 
     def __init__(self, settings: Settings) -> None:
@@ -27,12 +37,26 @@ class BehavioralLoader:
     # ── Public API ───────────────────────────────────────────────────────────
 
     def load(self, csv_path: str | Path) -> pd.DataFrame:
-        """Load a single CSV and return a cleaned DataFrame."""
+        """Load a single CSV (derivatives mode) and return a cleaned DataFrame."""
         path = Path(csv_path)
         if not path.exists():
             raise FileNotFoundError(f"Behavioural CSV not found: {path}")
         df = pd.read_csv(path)
         self._validate(df)
+        return self._clean(df)
+
+    def load_tsv(self, tsv_path: str | Path) -> pd.DataFrame:
+        """
+        Load a single BIDS events TSV (replication mode) and return a cleaned
+        DataFrame.  The TSV contains ALL trials for one run (all visibility
+        states mixed); filtering to a specific state is done by the caller.
+        """
+        path = Path(tsv_path)
+        if not path.exists():
+            raise FileNotFoundError(f"Events TSV not found: {path}")
+        df = pd.read_csv(path, sep="\t")
+        # Drop rows without a target label (empty / fixation rows)
+        df = df.dropna(subset=["targets"]).reset_index(drop=True)
         return self._clean(df)
 
     def load_visibility_state(
@@ -70,11 +94,15 @@ class BehavioralLoader:
         required = list(self._cfg.values())
         missing = [c for c in required if c not in df.columns]
         if missing:
-            raise ValueError(f"Behavioural CSV missing columns: {missing}")
+            raise ValueError(f"Behavioural file missing columns: {missing}")
 
     def _clean(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
-        # Normalise category strings
-        df[self._cfg["category"]] = df[self._cfg["category"]].str.strip()
-        df[self._cfg["visibility"]] = df[self._cfg["visibility"]].str.strip().str.lower()
+        # Normalise category and visibility strings
+        if self._cfg["category"] in df.columns:
+            df[self._cfg["category"]] = df[self._cfg["category"]].str.strip()
+        if self._cfg["visibility"] in df.columns:
+            df[self._cfg["visibility"]] = (
+                df[self._cfg["visibility"]].str.strip().str.lower()
+            )
         return df

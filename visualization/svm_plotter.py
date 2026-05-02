@@ -15,8 +15,8 @@ class SVMPlotter:
     """Generates bar charts and generalization heatmaps for SVM decoding."""
 
     def __init__(self, settings: Settings) -> None:
-        self._base_dir = Path(settings.visualization_dir)
-        self._dpi = settings.visualization.get("dpi", 150)
+        self._base_dir = Path(settings.vis_output_dir)
+        self._dpi = settings.vis_dpi
 
     def _out_dir(self, subdir: str) -> Path:
         p = self._base_dir / subdir
