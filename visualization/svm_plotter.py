@@ -32,7 +32,7 @@ class SVMPlotter:
         roi_names: list[str],
         subject_id: str,
         save_name: str,
-        subdir: str = "phase7_svm",
+        subdir: str = "phase0b_svm",
     ) -> plt.Figure:
         """
         Bar chart of mean AUC per ROI for a single subject × state.
@@ -98,8 +98,8 @@ class SVMPlotter:
         self,
         results_by_subject: dict[str, list[SVMResult]],
         roi_names: list[str],
-        save_name: str = "phase7_svm_generalisation_heatmap.png",
-        subdir: str = "phase7_svm",
+        save_name: str = "phase0b_svm_generalisation_heatmap.png",
+        subdir: str = "phase0b_svm",
     ) -> plt.Figure:
         """
         Subjects × ROI heatmap of delta-AUC (SVM − chance) for C→U transfer.
@@ -159,8 +159,8 @@ class SVMPlotter:
         all_results: dict[str, dict[str, list[SVMResult]]],
         roi_names: list[str],
         states: tuple[str, ...] = ("conscious", "unconscious", "c_to_u"),
-        save_name: str = "phase7_svm_group_summary.png",
-        subdir: str = "phase7_svm",
+        save_name: str = "phase0b_svm_group_summary.png",
+        subdir: str = "phase0b_svm",
     ) -> plt.Figure:
         """
         Group-level mean AUC (±SEM across subjects) per ROI and state.

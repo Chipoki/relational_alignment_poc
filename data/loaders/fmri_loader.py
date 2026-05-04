@@ -91,9 +91,9 @@ class FMRILoader:
 
     def extract_replication_run_patterns(
         self,
-        bold_path:       str | Path,
-        brain_mask:      np.ndarray,  # (X, Y, Z) bool  – whole-brain mask
-        trial_vol_indices: Sequence[int],  # 0-based TR indices for selected trials
+        bold_path:          str | Path,
+        brain_mask:         np.ndarray,  # (X, Y, Z) bool  – whole-brain mask
+        trial_vol_indices:  Sequence[int],  # 0-based TR indices for selected trials
     ) -> np.ndarray:
         """
         Extract trial patterns from one ICA-AROMA filtered per-run BOLD file,
@@ -105,21 +105,48 @@ class FMRILoader:
 
         Used in **replication mode**.
 
-        Returns (n_selected_trials, n_brain_voxels).
+        The brain_mask is matched to the current run's spatial shape:
+        if there is a mismatch (different runs may have been preprocessed
+        with slightly different bounding boxes) the mask is resampled via
+        nilearn or, when nilearn is unavailable, the run is skipped by
+        returning an empty matrix so that the rest of the subject is
+        preserved.
+
+        Returns (n_selected_trials, n_brain_voxels) where n_brain_voxels
+        equals brain_mask.sum() for the *reference* mask (voxels that exist
+        in both mask and run).  On any unrecoverable error an empty matrix
+        with shape (0, brain_mask.sum()) is returned so callers can skip
+        gracefully.
         """
-        # Import here to keep nilearn an optional dependency for derivatives-only users
         try:
             from nilearn.signal import clean as _clean_signal
         except ImportError:
             _clean_signal = None
 
-        bold_img = nib.load(str(bold_path))
-        bold_arr = np.asarray(bold_img.dataobj, dtype=np.float32)  # (X, Y, Z, T)
-        n_timepoints = bold_arr.shape[-1]
+        n_ref_voxels = int(brain_mask.sum())
+
+        bold_img      = nib.load(str(bold_path))
+        bold_arr      = np.asarray(bold_img.dataobj, dtype=np.float32)  # (X, Y, Z, T)
+        bold_shape_3d = bold_arr.shape[:3]
+        n_timepoints  = bold_arr.shape[-1]
+
+        # ── Bug-A fix: reconcile mask spatial shape with this run's BOLD shape ──
+        run_mask = self._match_mask_to_bold(
+            brain_mask   = brain_mask,
+            bold_shape   = bold_shape_3d,
+            bold_img_obj = bold_img,
+            bold_path    = bold_path,
+        )
+        if run_mask is None:
+            logger.warning(
+                "Skipping run %s: could not reconcile mask shape %s with BOLD shape %s.",
+                bold_path, brain_mask.shape, bold_shape_3d,
+            )
+            return np.zeros((0, n_ref_voxels), dtype=np.float32)
 
         # Flatten to (T, n_brain_voxels) in one shot – avoids Python loops
-        brain_flat = bold_arr[brain_mask]   # (n_brain_voxels, T)
-        ts         = brain_flat.T            # (T, n_brain_voxels)
+        brain_flat = bold_arr[run_mask]   # (n_run_voxels, T)
+        ts         = brain_flat.T         # (T, n_run_voxels)
         del bold_arr, brain_flat
 
         # Step 1: Detrend (matches v11's nilearn.signal.clean usage)
@@ -128,18 +155,17 @@ class FMRILoader:
                 warnings.simplefilter("ignore")
                 ts = _clean_signal(ts, t_r=self._tr, detrend=True, standardize=False)
         elif self._detrend:
-            # Fallback: linear detrend via numpy if nilearn unavailable
-            from numpy.polynomial import polynomial as P
-            x = np.arange(ts.shape[0], dtype=np.float64)
+            x    = np.arange(ts.shape[0], dtype=np.float64)
             coef = np.polyfit(x, ts, 1)
             trend = np.outer(x, coef[0]) + coef[1]
-            ts = ts - trend.astype(np.float32)
+            ts   = ts - trend.astype(np.float32)
 
         # Step 2: Slice trial volumes
         valid_idx = [v for v in trial_vol_indices if 0 <= v < n_timepoints]
         if not valid_idx:
-            return np.zeros((0, int(brain_mask.sum())), dtype=np.float32)
-        raw_matrix = ts[np.array(valid_idx, dtype=int)]  # (n_trials, n_voxels)
+            return np.zeros((0, n_ref_voxels), dtype=np.float32)
+        raw_matrix = ts[np.array(valid_idx, dtype=int)]  # (n_trials, n_run_voxels)
+        del ts
 
         # Step 3: Temporal z-score on the sliced volumes (ddof=1, matching v11)
         if self._zscore_run:
@@ -148,7 +174,133 @@ class FMRILoader:
             stds[stds == 0] = 1.0
             raw_matrix = (raw_matrix - means) / stds
 
+        # If the run mask differs from the reference mask, project back into the
+        # reference voxel space so all runs share the same column layout.
+        if run_mask.shape != brain_mask.shape or not np.array_equal(run_mask, brain_mask):
+            raw_matrix = self._project_to_ref_voxels(
+                patterns = raw_matrix,
+                run_mask = run_mask,
+                ref_mask = brain_mask,
+            )
+
         return raw_matrix.astype(np.float32)
+
+    # ── Mask reconciliation helpers (Bug-A fix) ───────────────────────────────
+
+    @staticmethod
+    def _match_mask_to_bold(
+        brain_mask:   np.ndarray,  # (X, Y, Z) bool  – reference mask
+        bold_shape:   tuple,       # (X', Y', Z')     – this run's spatial shape
+        bold_img_obj,              # nibabel image (for affine / resampling)
+        bold_path:    Path | str,
+    ) -> np.ndarray | None:
+        """
+        Return a boolean mask with the same spatial shape as `bold_shape`.
+
+        Strategy (in order of preference):
+        1. Shapes already match – return `brain_mask` as-is.
+        2. Try nilearn.image.resample_img to warp the reference mask NIfTI
+           into the run's voxel grid.
+        3. Simple crop / zero-pad along each axis – shape-only fix, no
+           affine awareness.  Acceptable because the spatial extent is
+           typically identical and differences are due to slight bounding-box
+           choices during preprocessing.
+        4. Cannot reconcile → return None so the caller can skip the run.
+        """
+        if brain_mask.shape == bold_shape:
+            return brain_mask
+
+        logger.debug(
+            "Mask shape %s ≠ BOLD shape %s for run %s – attempting reconciliation.",
+            brain_mask.shape, bold_shape, bold_path,
+        )
+
+        # ── Strategy 2: nilearn resample ──────────────────────────────────────
+        try:
+            import nibabel as nib
+            from nilearn.image import resample_img as _resample_img
+
+            ref_affine = bold_img_obj.affine
+            mask_nii   = nib.Nifti1Image(brain_mask.astype(np.float32), ref_affine)
+            target_nii = nib.Nifti1Image(
+                np.zeros(bold_shape, dtype=np.float32), ref_affine
+            )
+            resampled  = _resample_img(
+                mask_nii,
+                target_affine = target_nii.affine,
+                target_shape  = bold_shape,
+                interpolation = "nearest",
+            )
+            result = resampled.get_fdata().astype(bool)
+            logger.debug(
+                "Resampled mask %s → %s via nilearn (%d voxels).",
+                brain_mask.shape, result.shape, result.sum(),
+            )
+            return result
+        except Exception as exc:
+            logger.debug("nilearn resample failed (%s); falling back to crop/pad.", exc)
+
+        # ── Strategy 3: axis-wise crop / zero-pad ─────────────────────────────
+        try:
+            reconciled = np.zeros(bold_shape, dtype=bool)
+            slices_src = []
+            slices_dst = []
+            for dim_src, dim_dst in zip(brain_mask.shape, bold_shape):
+                min_dim = min(dim_src, dim_dst)
+                slices_src.append(slice(0, min_dim))
+                slices_dst.append(slice(0, min_dim))
+            reconciled[tuple(slices_dst)] = brain_mask[tuple(slices_src)]
+            logger.debug(
+                "Crop/padded mask %s → %s (%d voxels).",
+                brain_mask.shape, reconciled.shape, reconciled.sum(),
+            )
+            return reconciled
+        except Exception as exc:
+            logger.debug("Crop/pad failed (%s).", exc)
+
+        return None
+
+    @staticmethod
+    def _project_to_ref_voxels(
+        patterns: np.ndarray,   # (n_trials, n_run_voxels)
+        run_mask: np.ndarray,   # (X', Y', Z') bool – mask used to extract patterns
+        ref_mask: np.ndarray,   # (X,  Y,  Z)  bool – reference whole-subject mask
+    ) -> np.ndarray:
+        """
+        Map columns of `patterns` (indexed by `run_mask`) into the column
+        space defined by `ref_mask`, filling missing voxels with 0.
+        """
+        n_trials     = patterns.shape[0]
+        n_ref_voxels = int(ref_mask.sum())
+        out          = np.zeros((n_trials, n_ref_voxels), dtype=patterns.dtype)
+
+        min_shape = tuple(min(a, b) for a, b in zip(run_mask.shape, ref_mask.shape))
+        overlap   = (run_mask[:min_shape[0], :min_shape[1], :min_shape[2]] &
+                     ref_mask[:min_shape[0], :min_shape[1], :min_shape[2]])
+
+        run_col_map = {v: k for k, v in enumerate(np.flatnonzero(run_mask.ravel()))}
+        ref_col_map = {v: k for k, v in enumerate(np.flatnonzero(ref_mask.ravel()))}
+
+        overlap_flat = np.flatnonzero(
+            np.pad(
+                overlap,
+                [(0, run_mask.shape[i] - min_shape[i]) for i in range(3)],
+                mode="constant",
+            ).ravel()
+        )
+
+        run_cols = np.array(
+            [run_col_map[v] for v in overlap_flat if v in run_col_map], dtype=np.intp
+        )
+        ref_cols = np.array(
+            [ref_col_map[v] for v in overlap_flat if v in ref_col_map], dtype=np.intp
+        )
+
+        n_common = min(run_cols.size, ref_cols.size)
+        if n_common > 0:
+            out[:, ref_cols[:n_common]] = patterns[:, run_cols[:n_common]]
+
+        return out
 
     def zscore_patterns(self, patterns: np.ndarray) -> np.ndarray:
         """

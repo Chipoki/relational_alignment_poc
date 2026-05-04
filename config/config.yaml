@@ -41,7 +41,9 @@ data:
 
   subject_ids: []           # Leave empty to auto-discover from the active root
   n_subjects: 7
-  n_sessions: 6
+  n_sessions: 7
+  session_start: 1          # First session number (ds003927 / author_replication sessions are 2–7;
+                             # session 1 is a localiser and contains no task-recog events)
   n_runs_per_session: 9     # Used in replication mode to iterate run folders
   tr: 0.85                  # Repetition time in seconds
   hrf_delay_seconds: 5.0

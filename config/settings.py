@@ -87,7 +87,8 @@ class Settings:
 
         # ── scalar data params ───────────────────────────────────────────────
         self.n_subjects:        int   = data.get("n_subjects", len(self.subject_ids))
-        self.n_sessions:        int   = data.get("n_sessions", 6)
+        self.n_sessions:        int   = data.get("n_sessions", 7)
+        self.session_start:     int   = data.get("session_start", 1)  # first session number (sessions are 2-7, not 1-6)
         self.n_runs_per_session: int  = data.get("n_runs_per_session", 9)
         self.tr:                float = float(data["tr"])
         self.hrf_delay_seconds: float = float(data.get("hrf_delay_seconds", 5.0))
@@ -131,7 +132,7 @@ class Settings:
 
         # ── visualisation ────────────────────────────────────────────────────
         viz = raw.get("visualization", {})
-        self.vis_output_dir        = viz.get("output_dir", "figures")
+        self.vis_output_dir        = os.path.join(self.output_parent_dir, viz.get("output_dir", "figures"))
         self.vis_dpi               = int(viz.get("dpi", 150))
         self.vis_mds_n_components  = int(viz.get("meta_mds_n_components", 2))
 

@@ -177,56 +177,32 @@ class SubjectBuilder:
     # ── Replication mode ──────────────────────────────────────────────────────
 
     def _build_replication(self, subject_id: str) -> Subject:
-        """
-        Build Subject from author_replication layout, exactly replicating
-        aroma_decoding_pipeline_v11.py's data loading strategy:
-
-            • BOLD:       author_replication/MRI/<sub>/func/session-<SS>/
-                              <sub>_unfeat_run-<R>/outputs/func/ICAed_filtered/filtered.nii.gz
-            • Brain mask: first valid per-run mask.nii.gz
-            • ROI masks:  ctx-lh-<roi>_BOLD.nii.gz + ctx-rh-<roi>_BOLD.nii.gz  (bilateral union)
-            • Events:     ds003927/<sub>/ses-<SS>/func/*_events.tsv
-        """
         subject = Subject(subject_id=subject_id)
-        cfg     = self._settings
+        cfg = self._settings
 
-        # ── Discover run-level BOLD jobs ──────────────────────────────────────
-        run_jobs: list[tuple[int, int, Path, Path]] = []  # (session, run, bold_path, tsv_path)
+        # ── Discover run jobs (unchanged) ──────────────────────────────────
+        run_jobs: list[tuple[int, int, Path, Path]] = []
         first_bold_path: Path | None = None
         first_mask_path: Path | None = None
 
-        n_sessions = cfg.n_sessions
-        n_runs     = cfg.n_runs_per_session
-
-        for ses in range(1, n_sessions + 1):
+        for ses in range(cfg.session_start, cfg.session_start + cfg.n_sessions):
             ses_func_dir = cfg.ds003927_session_func_dir(subject_id, ses)
             if not ses_func_dir.exists():
-                logger.debug("[%s] ds003927 session dir missing: %s", subject_id, ses_func_dir)
                 continue
-
-            # Discover event TSVs in sorted order (run index = position+1)
             tsv_files = sorted(
                 f for f in ses_func_dir.iterdir()
                 if f.name.endswith("_events.tsv") and "task-recog" in f.name
             )
-
             for run_idx, tsv_path in enumerate(tsv_files, start=1):
-                run_dir   = cfg.replic_run_dir(subject_id, ses, run_idx)
+                run_dir = cfg.replic_run_dir(subject_id, ses, run_idx)
                 bold_path = cfg.replic_filtered_bold(run_dir)
                 mask_path = cfg.replic_run_mask(run_dir)
-
                 if not bold_path.exists():
-                    logger.debug(
-                        "[%s] BOLD not found, skipping ses=%d run=%d: %s",
-                        subject_id, ses, run_idx, bold_path
-                    )
                     continue
-
                 if first_bold_path is None:
                     first_bold_path = bold_path
                 if first_mask_path is None and mask_path.exists():
                     first_mask_path = mask_path
-
                 run_jobs.append((ses, run_idx, bold_path, tsv_path))
 
         if not run_jobs:
@@ -236,98 +212,158 @@ class SubjectBuilder:
             )
         logger.info("[%s] Found %d run(s) to process.", subject_id, len(run_jobs))
 
-        # ── Brain mask: first valid per-run func mask ──────────────────────────
         if first_mask_path is None:
             raise FileNotFoundError(
-                f"[{subject_id}] No per-run mask.nii.gz found. "
-                f"Check {cfg.replic_func_dir(subject_id)}."
+                f"[{subject_id}] No per-run mask.nii.gz found."
             )
         full_mask = self._fmri.load_mask(first_mask_path)
         subject.mask_paths = [first_mask_path]
 
-        # ── Bilateral ROI masks ────────────────────────────────────────────────
         roi_bold_dir = cfg.replic_roi_bold_dir(subject_id)
-        bilateral_masks: dict[str, np.ndarray] = (
-            self._load_bilateral_roi_masks(subject_id, roi_bold_dir, full_mask, first_bold_path)
+        bilateral_masks = self._load_bilateral_roi_masks(
+            subject_id, roi_bold_dir, full_mask, first_bold_path
         )
+        roi_names_ordered = list(bilateral_masks.keys())
 
-        # ── Per-state accumulation buffers ────────────────────────────────────
-        # state → { roi_name → list[np.ndarray] (one per trial) }
-        roi_buffers:  dict[str, dict[str, list[np.ndarray]]] = {
-            s: {"wholebrain": []} for s in self._states
+        # ── Pre-compute ROI column-index arrays ────────────────────────────
+        full_flat = np.flatnonzero(full_mask)
+        full_flat_inv = {v: k for k, v in enumerate(full_flat)}
+        roi_col_indices: dict[str, np.ndarray] = {}
+        for roi_name, roi_bitmask in bilateral_masks.items():
+            roi_flat = np.flatnonzero(roi_bitmask)
+            roi_col_indices[roi_name] = np.array(
+                [full_flat_inv[v] for v in roi_flat if v in full_flat_inv], dtype=np.intp
+            )
+
+        # ── Compact accumulators (Bug-B fix) ───────────────────────────────
+        # state → np.ndarray | None  (None = no trials yet)
+        wb_accum: dict[str, np.ndarray | None] = {s: None for s in self._states}
+        roi_accum: dict[str, dict[str, np.ndarray | None]] = {
+            s: {r: None for r in roi_names_ordered} for s in self._states
         }
-        for s in self._states:
-            for roi_name in bilateral_masks:
-                roi_buffers[s][roi_name] = []
-
         meta_buffers: dict[str, list[dict]] = {s: [] for s in self._states}
 
-        # ── Process each run ──────────────────────────────────────────────────
+        # ── Per-run processing ─────────────────────────────────────────────
         for ses, run_idx, bold_path, tsv_path in run_jobs:
             logger.info("[%s] ses=%d run=%d → %s", subject_id, ses, run_idx, bold_path.name)
 
-            # Load TSV and filter to rows with volume_interest == 1 (matching v11)
             try:
                 tsv_df = self._behavioral.load_tsv(tsv_path)
             except Exception as exc:
-                logger.warning("[%s] ses=%d run=%d TSV load failed: %s", subject_id, ses, run_idx, exc)
+                logger.warning("[%s] ses=%d run=%d TSV load failed: %s",
+                               subject_id, ses, run_idx, exc)
                 continue
 
             tsv_df = tsv_df.dropna(subset=["targets"])
-            vi_df  = tsv_df[tsv_df["volume_interest"] == 1].copy()
+            vi_df = tsv_df[tsv_df["volume_interest"] == 1].copy()
             if vi_df.empty:
-                logger.debug("[%s] ses=%d run=%d: no volume_interest==1 rows.", subject_id, ses, run_idx)
                 continue
 
-            # Resolve TR indices (matches v11: "time_indices" column if present, else index)
-            if "time_indices" in vi_df.columns:
-                tr_indices = vi_df["time_indices"].astype(int).values
-            else:
-                tr_indices = vi_df.index.values.astype(int)
-
-            # Extract whole-brain patterns for this run (detrend + z-score inside)
-            run_patterns = self._fmri.extract_replication_run_patterns(
-                bold_path   = bold_path,
-                brain_mask  = full_mask,
-                trial_vol_indices = tr_indices,
+            tr_indices = (
+                vi_df["time_indices"].astype(int).values
+                if "time_indices" in vi_df.columns
+                else vi_df.index.values.astype(int)
             )
-            if run_patterns.shape[0] == 0:
+
+            # Bug-A fix: bad runs return empty array; exception → skip run
+            try:
+                run_patterns = self._fmri.extract_replication_run_patterns(
+                    bold_path=bold_path,
+                    brain_mask=full_mask,
+                    trial_vol_indices=tr_indices,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[%s] ses=%d run=%d pattern extraction failed (%s) – skipping run.",
+                    subject_id, ses, run_idx, exc,
+                )
                 continue
 
-            # Build per-trial metadata (matches v11 trial_id convention)
-            for row_i, (_, row) in enumerate(vi_df.iterrows()):
-                trial_num = float(row["trials"])
-                vis_state = str(row["visibility"]).strip().lower()
+            if run_patterns.shape[0] == 0:
+                logger.warning(
+                    "[%s] ses=%d run=%d returned 0 patterns – skipping run.",
+                    subject_id, ses, run_idx,
+                )
+                continue
+
+            n_run_trials = run_patterns.shape[0]
+
+            # ── Trial-level averaging (v11 parity) ────────────────────────
+            # v11 groups all volume_interest rows sharing the same trial_num
+            # and averages their z-scored volumes into one pattern per trial.
+            # We replicate that here: collect row indices per (state, trial),
+            # then average the corresponding run_patterns rows.
+
+            # Build a mapping: trial_num → list of row positions in vi_df
+            trial_ids_arr = vi_df["trials"].values
+            unique_trials = sorted(np.unique(trial_ids_arr))
+
+            # Per-state accumulators for THIS run (one averaged row per trial)
+            run_meta: dict[str, list[dict]] = {s: [] for s in self._states}
+            # averaged patterns per state: list of 1-D arrays
+            run_patterns_by_state: dict[str, list[np.ndarray]] = {
+                s: [] for s in self._states
+            }
+
+            vi_df_reset = vi_df.reset_index(drop=True)
+
+            for trial_num in unique_trials:
+                row_positions = np.where(trial_ids_arr == trial_num)[0]
+                # Guard: only include positions that fall within extracted patterns
+                row_positions = row_positions[row_positions < n_run_trials]
+                if row_positions.size == 0:
+                    continue
+
+                # Determine visibility from the first matching row (as v11 does)
+                first_row = vi_df_reset.iloc[row_positions[0]]
+                vis_state = str(first_row.get("visibility", "")).strip().lower()
                 if vis_state not in self._states:
                     continue
 
-                # Compute compound ID (ses * 10000 + run * 100 + trial)
-                trial_id = ses * 10000 + run_idx * 100 + trial_num
+                # Average all vi volumes for this trial (v11: zscored_matrix[row_indices].mean)
+                averaged_pattern = run_patterns[row_positions].mean(axis=0)
 
-                meta_buffers[vis_state].append({
-                    "session":    ses,
-                    "run":        run_idx,
-                    "trials":     trial_num,
-                    "id":         trial_id,
-                    "targets":    str(row.get("targets", "")),
-                    "labels":     str(row.get("labels", f"item_{int(trial_num)}")),
+                run_patterns_by_state[vis_state].append(averaged_pattern)
+                run_meta[vis_state].append({
+                    "session": ses,
+                    "run": run_idx,
+                    "trials": trial_num,
+                    "id": ses * 10000 + run_idx * 100 + trial_num,
+                    "targets": str(first_row.get("targets", "")),
+                    "labels": str(first_row.get("labels", f"item_{int(trial_num)}")),
                     "visibility": vis_state,
                     "volume_interest": 1,
-                    "onset":      float(row.get("onset", 0)),
+                    "onset": float(first_row.get("onset", 0)),
                 })
 
-                wb_pattern = run_patterns[row_i]
-                roi_buffers[vis_state]["wholebrain"].append(wb_pattern)
+            for state in self._states:
+                if not run_patterns_by_state[state]:
+                    continue
 
-                for roi_name, roi_bitmask in bilateral_masks.items():
-                    # roi_bitmask is already intersected with full_mask in load step
-                    # Map brain-space voxel indices to pattern columns
-                    roi_pattern = self._apply_precomputed_roi_mask(
-                        wb_pattern, full_mask, roi_bitmask
+                # Stack averaged trial patterns: (n_trials_this_run, n_voxels)
+                wb_chunk = np.stack(run_patterns_by_state[state], axis=0).astype(np.float32)
+
+                wb_accum[state] = (
+                    wb_chunk.copy() if wb_accum[state] is None
+                    else np.concatenate([wb_accum[state], wb_chunk], axis=0)
+                )
+
+                for roi_name, col_idx in roi_col_indices.items():
+                    roi_chunk = (
+                        wb_chunk[:, col_idx] if col_idx.size > 0
+                        else np.zeros((wb_chunk.shape[0], 0), dtype=np.float32)
                     )
-                    roi_buffers[vis_state][roi_name].append(roi_pattern)
+                    roi_accum[state][roi_name] = (
+                        roi_chunk.copy() if roi_accum[state][roi_name] is None
+                        else np.concatenate([roi_accum[state][roi_name], roi_chunk], axis=0)
+                    )
 
-        # ── Assemble Subject visibility states ────────────────────────────────
+                meta_buffers[state].extend(run_meta[state])
+
+            del run_patterns, run_patterns_by_state, run_meta
+            gc.collect()
+
+        # ── Assemble Subject visibility states ─────────────────────────────
         for state in self._states:
             meta_list = meta_buffers[state]
             if not meta_list:
@@ -335,18 +371,21 @@ class SubjectBuilder:
                 continue
 
             events_df = pd.DataFrame(meta_list).reset_index(drop=True)
-
-            # Compile roi_patterns dict
             roi_patterns: dict[str, np.ndarray] = {}
-            for roi_name, trial_list in roi_buffers[state].items():
-                if not trial_list:
-                    continue
-                roi_patterns[roi_name] = np.stack(trial_list, axis=0)
-                self._discovered_rois.add(roi_name)
 
-            labels        = (events_df["targets"] == "Living_Things").astype(int).values
+            if wb_accum[state] is not None:
+                roi_patterns["wholebrain"] = wb_accum[state]
+                self._discovered_rois.add("wholebrain")
+
+            for roi_name in roi_names_ordered:
+                arr = roi_accum[state][roi_name]
+                if arr is not None and arr.shape[0] > 0:
+                    roi_patterns[roi_name] = arr
+                    self._discovered_rois.add(roi_name)
+
+            labels = (events_df["targets"] == "Living_Things").astype(int).values
             label_strings = events_df["targets"].values
-            stim_names    = events_df["labels"].values.astype(str)
+            stim_names = events_df["labels"].values.astype(str)
 
             visibility_data = VisibilityData(
                 state=state,

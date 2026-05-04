@@ -47,6 +47,7 @@ from __future__ import annotations
 import logging
 import pickle
 from pathlib import Path
+from typing import List
 
 import numpy as np
 
@@ -61,10 +62,16 @@ _CHECKPOINT_SUBDIR = "svm"
 _CHECKPOINT_FILE   = "phase0b_svm_results.pkl"
 
 
-def _checkpoint_path(settings: Settings) -> Path:
+def _checkpoint_path(settings: Settings, subjects: List[str] = None) -> Path:
     ckpt_dir = settings.checkpoints_dir / _CHECKPOINT_SUBDIR
     ckpt_dir.mkdir(parents=True, exist_ok=True)
-    return ckpt_dir / _CHECKPOINT_FILE
+    if subjects is not None:
+        ckpt_file_name = _CHECKPOINT_FILE.split(".")[0]
+        ckpt_file_suffix = _CHECKPOINT_FILE.split(".")[-1]
+        ckpt_dir_path = ckpt_dir / f"{ckpt_file_name}_{'_'.join(subjects)}.{ckpt_file_suffix}"
+    else:
+        ckpt_dir_path = ckpt_dir / _CHECKPOINT_FILE
+    return ckpt_dir_path
 
 
 def run(
@@ -77,7 +84,9 @@ def run(
     logger.info("=" * 60)
 
     # ── Idempotency guard ──────────────────────────────────────────────────
-    ckpt = _checkpoint_path(settings)
+    ckpt = _checkpoint_path(settings, subjects)
+    # add subject names to checkpoint filename to allow per-subject caching (optional)
+
     if ckpt.exists():
         logger.info(
             "SVM checkpoint found at %s – Phase 0.2 skipped (loading cached results).",
