@@ -195,6 +195,20 @@ class RDMPlotter:
         from scipy.spatial.distance import squareform
 
         if common_order is not None:
+            # Guard: the cached consensus order was computed from a (possibly
+            # different-sized) group of RDMs.  If the current RDM has a
+            # different number of stimuli, the order array is incompatible →
+            # fall back silently to an independent sort for this RDM.
+            if len(common_order) != rdm.n_stimuli:
+                print(
+                    "plot_sorted_rdm: consensus order length %d ≠ RDM size %d "
+                    "for %s %s %s – falling back to independent sort.",
+                    len(common_order), rdm.n_stimuli,
+                    rdm.subject_id, rdm.state, rdm.roi_or_layer,
+                )
+                common_order = None  # fall through to independent branch
+
+        if common_order is not None:
             order       = common_order
             _best_k     = best_k
             _best_score = best_score

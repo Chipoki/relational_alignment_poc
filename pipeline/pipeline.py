@@ -140,6 +140,17 @@ class POCPipeline:
             self._cfg, self._subjects, self._human_rdms,
         )
 
+    def phase0b_svm_decoding_from_disk(
+        self, subject_ids: list[str] | None = None
+    ) -> dict:
+        """
+        Phase 0.2 – SVM decoding loading patterns from on-disk archives.
+
+        Used in ``--from-subject-rdms`` mode so that SVM decoding can be run
+        on the full cohort after individual per-subject BOLD runs.
+        """
+        return phase0b_svm.run_from_disk(self._cfg, subject_ids)
+
     def phase1_extract_embeddings(self, stimulus_image_dir=None) -> None:
         phase1_embeddings.run(
             self._fcnn_embedder, self._embedding_store, stimulus_image_dir
@@ -149,6 +160,21 @@ class POCPipeline:
         self._human_rdms, self._fcnn_rdms = phase2_rdms.run(
             self._cfg, self._subjects, self._embedding_store,
             self._rdm_builder, self._rdm_plotter,
+        )
+
+    def phase2_load_rdms_from_disk(
+        self, subject_ids: list[str] | None = None
+    ) -> None:
+        """
+        Populate ``self._human_rdms`` and ``self._fcnn_rdms`` from the
+        on-disk per-subject archives without loading any BOLD data.
+
+        Replaces ``phase2_build_rdms()`` in the ``--from-subject-rdms`` run
+        mode.  Also registers discovered ROIs with settings so phases 3-6
+        iterate over the correct ROI set.
+        """
+        self._human_rdms, self._fcnn_rdms = phase2_rdms.load_rdms_from_disk(
+            self._cfg, subject_ids
         )
 
     def phase3_inter_subject_rsa(self) -> dict:

@@ -13,6 +13,15 @@ from analysis.rsa.rdm_utils import aggregate_rdm, gw_consensus_matrix, sorted_or
 from config.settings import Settings
 from embeddings.embedding_store import EmbeddingStore
 from utils.io_utils import ensure_dir
+from utils.rdm_io import (
+    dump_subject_rdms,
+    dump_aggregate_rdms,
+    dump_fcnn_rdms,
+    load_subject_rdms,
+    load_aggregate_rdms,
+    load_fcnn_rdms,
+    list_dumped_subjects,
+)
 from visualization.rdm_plotter import RDMPlotter
 
 logger = logging.getLogger(__name__)
@@ -114,6 +123,16 @@ def run(
                 "Built %d RDMs for subject %s, state=%s (n_stimuli=%d)",
                 len(state_rdms), subj.subject_id, state, len(sorted_stims),
             )
+
+    # ── Dump per-subject RDMs immediately after building (idempotent) ─────
+    # This happens regardless of run mode so that future per-subject runs
+    # automatically build up the on-disk archive used by --from-subject-rdms.
+    rdm_dump_dir = settings.subject_rdm_dir
+    for subj in subjects:
+        sid = subj.subject_id
+        subj_state_rdms = human_rdms.get(sid, {})
+        if subj_state_rdms:
+            dump_subject_rdms(sid, subj_state_rdms, rdm_dump_dir)
 
     # ── FCNN RDMs ────────────────────────────────────────────────────────
     human_state_map = {"clear": "conscious", "chance": "unconscious"}
@@ -352,5 +371,106 @@ def run(
     human_rdms["_agg_rdms"]  = agg_rdms
     human_rdms["_mean_rdms"] = agg_rdms["mean"]
 
+    # ── Dump aggregate + FCNN RDMs to disk (idempotent) ───────────────────
+    if agg_rdms:
+        dump_aggregate_rdms(agg_rdms, rdm_dump_dir)
+    if fcnn_rdms:
+        dump_fcnn_rdms(fcnn_rdms, rdm_dump_dir)
+
     logger.info("Phase 2 complete.\n")
     return human_rdms, fcnn_rdms
+
+
+# ── Per-subject RDM load path (bypasses BOLD entirely) ───────────────────────
+
+def load_rdms_from_disk(
+    settings: Settings,
+    subject_ids: list[str] | None = None,
+) -> tuple[dict, dict]:
+    """
+    Reconstruct ``human_rdms`` and ``fcnn_rdms`` entirely from the on-disk
+    per-subject archives written by a previous ``--dump-subject-rdms`` run.
+
+    No BOLD data, no NIfTI loading, no Subject objects needed.
+
+    Parameters
+    ----------
+    settings    : active Settings (used for paths and roi registration)
+    subject_ids : restrict to these subjects; defaults to all dumped subjects
+
+    Returns
+    -------
+    human_rdms : same structure as returned by ``run()``
+    fcnn_rdms  : same structure as returned by ``run()``
+
+    Raises
+    ------
+    RuntimeError  if no per-subject RDM archives are found on disk
+    """
+    logger.info("=" * 60)
+    logger.info("PHASE 2 (disk-load mode) – Reconstructing RDMs from archives")
+    logger.info("=" * 60)
+
+    rdm_dump_dir = settings.subject_rdm_dir
+    available    = list_dumped_subjects(rdm_dump_dir)
+
+    if not available:
+        raise RuntimeError(
+            f"No per-subject RDM archives found under {rdm_dump_dir}.\n"
+            "Run with --dump-subject-rdms for at least one subject first."
+        )
+
+    ids_to_load = subject_ids if subject_ids else available
+    missing     = [sid for sid in ids_to_load if sid not in available]
+    if missing:
+        logger.warning(
+            "The following subjects have no RDM archive and will be skipped: %s",
+            missing,
+        )
+
+    human_rdms: dict = {}
+    discovered_rois: set[str] = set()
+
+    for sid in ids_to_load:
+        if sid not in available:
+            continue
+        try:
+            state_rdms = load_subject_rdms(sid, rdm_dump_dir)
+            human_rdms[sid] = state_rdms
+            for state_dict in state_rdms.values():
+                discovered_rois.update(state_dict.keys())
+        except Exception as exc:
+            logger.error("Failed to load RDMs for %s: %s", sid, exc)
+
+    if not human_rdms:
+        raise RuntimeError("No subject RDMs could be loaded from disk.")
+
+    logger.info(
+        "Loaded RDMs for %d subjects: %s", len(human_rdms), sorted(human_rdms.keys())
+    )
+
+    # ── Register ROIs with settings (mirrors SubjectBuilder.register_rois) ─
+    settings.register_active_rois(sorted(discovered_rois))
+    logger.info("Registered %d ROIs: %s", len(discovered_rois), sorted(discovered_rois))
+
+    # ── Aggregate RDMs ─────────────────────────────────────────────────────
+    agg_rdms = load_aggregate_rdms(rdm_dump_dir)
+    if not agg_rdms:
+        logger.info(
+            "No aggregate RDM archive found – downstream phases that need "
+            "aggregate RDMs (e.g. phase 3 consensus figures) may be limited."
+        )
+        agg_rdms = {m: {s: {} for s in ("conscious", "unconscious")}
+                    for m in ("mean", "median")}
+
+    human_rdms["_agg_rdms"]  = agg_rdms
+    human_rdms["_mean_rdms"] = agg_rdms.get("mean", {})
+
+    # ── FCNN RDMs ──────────────────────────────────────────────────────────
+    fcnn_rdms = load_fcnn_rdms(rdm_dump_dir)
+    if not fcnn_rdms:
+        logger.info("No FCNN RDM archives found – cross-modality phases will be skipped.")
+
+    logger.info("Phase 2 (disk-load mode) complete.\n")
+    return human_rdms, fcnn_rdms
+

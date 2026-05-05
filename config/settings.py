@@ -295,6 +295,21 @@ class Settings:
     def checkpoints_dir(self) -> Path:
         return self.output_parent_dir / "checkpoints"
 
+    @property
+    def subject_rdm_dir(self) -> Path:
+        """
+        Directory that holds the per-subject RDM archives written by
+        ``--dump-subject-rdms`` and read by ``--from-subject-rdms``.
+
+        Default: ``<checkpoints_dir>/subject_rdms/``
+        Override via ``output.subject_rdm_dir`` in config.yaml.
+        """
+        raw = load_raw_config()
+        custom = raw.get("output", {}).get("subject_rdm_dir", None)
+        if custom:
+            return Path(custom)
+        return self.checkpoints_dir / "subject_rdms"
+
     def ensure_output_dirs(self) -> None:
         for d in [
             self.results_dir,

@@ -180,7 +180,46 @@ class SubjectBuilder:
         subject = Subject(subject_id=subject_id)
         cfg = self._settings
 
-        # ── Discover run jobs (unchanged) ──────────────────────────────────
+        # ── Discover run jobs ──────────────────────────────────────────────
+        #
+        # The pairing problem
+        # -------------------
+        # We need to match TSV event files (in ds003927) to BOLD run folders
+        # (in author_replication).  In an ideal world the run number embedded
+        # in the TSV filename (e.g. _run-6_events.tsv) equals the run-folder
+        # suffix (e.g. sub-01_unfeat_run-6/).
+        #
+        # In practice two classes of mismatch exist:
+        #
+        #   Class A – BOLD folder absent entirely (defective / missing run):
+        #       sub-03 ses-01 run-4: TSV says run-4, BOLD folder run-4 exists
+        #       but filtered.nii.gz inside it is missing.  → Correct action:
+        #       skip that run.  This is handled by the bold_path.exists() guard.
+        #
+        #   Class B – BOLD folder numbered differently from the TSV:
+        #       sub-01 ses-04 runs 61 & 62: TSV says run-61 and run-62, but
+        #       the BOLD folders are named unfeat_run-6 and unfeat_run-7.
+        #       There is NO folder called unfeat_run-61.
+        #
+        # Strategy
+        # --------
+        # 1. Sort TSV files by their embedded run number (temporal order).
+        # 2. Discover all BOLD run folders that actually have a filtered.nii.gz
+        #    and sort them by their folder run number (also temporal order).
+        # 3. Try a direct number match first (TSV run N → folder run N).
+        #    If the folder exists and has a BOLD → use it.
+        # 4. If no direct match is found, fall back to POSITIONAL pairing:
+        #    sort both remaining unmatched lists by number and pair them 1:1.
+        #    This recovers Class-B mismatches (sub-01 ses-04 runs 61/62 → 6/7).
+        # 5. Any TSV that ends up with no BOLD counterpart is logged and
+        #    skipped (Class A).
+        #
+        # The positional fallback is safe because both sides are sorted by
+        # run number, which reflects chronological acquisition order, and
+        # the FEAT preprocessing pipeline preserves that order in the folder
+        # names regardless of what number is written on them.
+        import re as _re
+
         run_jobs: list[tuple[int, int, Path, Path]] = []
         first_bold_path: Path | None = None
         first_mask_path: Path | None = None
@@ -189,21 +228,116 @@ class SubjectBuilder:
             ses_func_dir = cfg.ds003927_session_func_dir(subject_id, ses)
             if not ses_func_dir.exists():
                 continue
-            tsv_files = sorted(
-                f for f in ses_func_dir.iterdir()
-                if f.name.endswith("_events.tsv") and "task-recog" in f.name
-            )
-            for run_idx, tsv_path in enumerate(tsv_files, start=1):
-                run_dir = cfg.replic_run_dir(subject_id, ses, run_idx)
-                bold_path = cfg.replic_filtered_bold(run_dir)
-                mask_path = cfg.replic_run_mask(run_dir)
-                if not bold_path.exists():
+
+            # --- Collect and sort TSV files by embedded run number ---
+            tsv_entries: list[tuple[int, Path]] = []
+            for f in ses_func_dir.iterdir():
+                if not (f.name.endswith("_events.tsv") and "task-recog" in f.name):
                     continue
+                m = _re.search(r"_run-(\d+)_events\.tsv$", f.name)
+                if not m:
+                    logger.warning(
+                        "[%s] ses=%d: cannot parse run# from %s – skipping.",
+                        subject_id, ses, f.name,
+                    )
+                    continue
+                tsv_entries.append((int(m.group(1)), f))
+            tsv_entries.sort(key=lambda x: x[0])
+
+            if not tsv_entries:
+                continue
+
+            # --- Collect BOLD run folders that contain a valid filtered.nii.gz ---
+            ses_bold_dir = cfg.replic_func_dir(subject_id) / f"session-{ses:02d}"
+            bold_entries: list[tuple[int, Path, Path]] = []  # (folder_run_num, bold, mask)
+            if ses_bold_dir.exists():
+                folder_pat = _re.compile(rf"^{_re.escape(subject_id)}_unfeat_run-(\d+)$")
+                for run_dir in ses_bold_dir.iterdir():
+                    fm = folder_pat.match(run_dir.name)
+                    if not fm:
+                        continue
+                    bold_path = cfg.replic_filtered_bold(run_dir)
+                    mask_path = cfg.replic_run_mask(run_dir)
+                    if not bold_path.exists():
+                        continue
+                    bold_entries.append((int(fm.group(1)), bold_path, mask_path))
+                bold_entries.sort(key=lambda x: x[0])
+
+            if not bold_entries:
+                logger.warning(
+                    "[%s] ses=%d: no valid BOLD folders found – skipping session.",
+                    subject_id, ses,
+                )
+                continue
+
+            bold_by_num = {num: (bp, mp) for num, bp, mp in bold_entries}
+            tsv_by_num = {num: tsv_path for num, tsv_path in tsv_entries}
+
+            # --- Step 3: direct number match ---
+            all_ses_matches: list[tuple[int, int, Path, Path]] = []
+            if len(tsv_entries) == len(bold_entries):
+                tsv_to_bold = self.pair_runs([entry[0] for entry in tsv_entries], [entry[0] for entry in bold_entries])
+                for tsv_run, bold_run in tsv_to_bold:
+                    if bold_run in bold_by_num:
+                        bp, mp = bold_by_num[bold_run]
+                        tsv_path = tsv_by_num[tsv_run]
+                        all_ses_matches.append((tsv_run, bold_run, bp, tsv_path))
+            else:
+                matched_tsv_nums: set[int] = set()
+                matched_bold_nums: set[int] = set()
+                direct_matches: list[tuple[int, int, Path, Path]] = []  # (tsv_run, folder_run, bold, tsv)
+                for tsv_run, tsv_path in tsv_entries:
+                    if tsv_run in bold_by_num:
+                        bp, mp = bold_by_num[tsv_run]
+                        direct_matches.append((tsv_run, tsv_run, bp, tsv_path))
+                        matched_tsv_nums.add(tsv_run)
+                        matched_bold_nums.add(tsv_run)
+
+                # --- Step 4: positional fallback for unmatched pairs ---
+                unmatched_tsvs  = [(n, p) for n, p in tsv_entries
+                                   if n not in matched_tsv_nums]
+                unmatched_bolds = [(n, bp, mp) for n, bp, mp in bold_entries
+                                   if n not in matched_bold_nums]
+
+                positional_matches: list[tuple[int, int, Path, Path]] = []
+                if unmatched_tsvs and unmatched_bolds:
+                    if len(unmatched_tsvs) != len(unmatched_bolds):
+                        logger.warning(
+                            "[%s] ses=%d: %d unmatched TSV(s) vs %d unmatched BOLD(s) "
+                            "after direct matching – positional pairing will be "
+                            "truncated to the shorter side.",
+                            subject_id, ses, len(unmatched_tsvs), len(unmatched_bolds),
+                        )
+                    for (tsv_run, tsv_path), (bold_num, bp, _) in zip(
+                        unmatched_tsvs, unmatched_bolds
+                    ):
+                        logger.info(
+                            "[%s] ses=%d: positional fallback – TSV run-%d paired "
+                            "with BOLD folder run-%d (filtered.nii.gz exists).",
+                            subject_id, ses, tsv_run, bold_num,
+                        )
+                        positional_matches.append((tsv_run, bold_num, bp, tsv_path))
+                elif unmatched_tsvs:
+                    for tsv_run, tsv_path in unmatched_tsvs:
+                        logger.warning(
+                            "[%s] ses=%d: TSV run-%d has no matching BOLD folder – skipped.",
+                            subject_id, ses, tsv_run,
+                        )
+
+                # --- Merge and append to run_jobs ---
+                all_ses_matches = sorted(
+                    direct_matches + positional_matches, key=lambda x: x[0]
+                )
+            # Build a quick lookup of mask paths by bold path
+            bold_to_mask: dict[Path, Path] = {bp: mp for _, bp, mp in bold_entries}
+
+            for tsv_run, folder_run, bp, tsv_path in all_ses_matches:
+                run_jobs.append((ses, tsv_run, bp, tsv_path))
                 if first_bold_path is None:
-                    first_bold_path = bold_path
-                if first_mask_path is None and mask_path.exists():
-                    first_mask_path = mask_path
-                run_jobs.append((ses, run_idx, bold_path, tsv_path))
+                    first_bold_path = bp
+                mp = bold_to_mask.get(bp)
+                if first_mask_path is None and mp is not None and mp.exists():
+                    first_mask_path = mp
 
         if not run_jobs:
             raise RuntimeError(
@@ -403,6 +537,58 @@ class SubjectBuilder:
 
         logger.info("Built %s (replication mode)", subject)
         return subject
+
+    # ── Helper: pair runs ─────────────────────────────────────────────────────
+
+    @staticmethod
+    def pair_runs(tsv_run_names: list, unfeat_run_names: list) -> list[tuple]:
+        """
+        Pair TSV run numbers with BOLD folder run numbers.
+        
+        Strategy:
+        1. Direct match: pair runs where TSV[i] == unfeat[i] for initial sequence
+           (stop at first mismatch to preserve chronological order)
+        2. For remaining TSV runs:
+           - Separate into those that CAN'T match (don't exist in unfeat list)
+             and those that CAN match (exist in unfeat but weren't used)
+           - Pair cannot-match runs first with remaining unfeat
+           - Then pair can-match runs with remaining unfeat
+        
+        Example:
+            tsv_run_names = [1, 2, 3, 4, 5, 7, 8, 9, 61, 62]
+            unfeat_run_names = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]
+            Returns: [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), 
+                      (61, 6), (62, 7), (7, 8), (8, 9), (9, 10)]
+        """
+        paired_runs = []
+        used_unfeat = set()
+        unfeat_list = list(unfeat_run_names)
+        unfeat_set = set(unfeat_run_names)
+        
+        # Step 1: Direct match for initial sequence where TSV[i] == unfeat[i]
+        direct_match_count = 0
+        for i in range(min(len(tsv_run_names), len(unfeat_list))):
+            if tsv_run_names[i] == unfeat_list[i]:
+                paired_runs.append((tsv_run_names[i], unfeat_list[i]))
+                used_unfeat.add(unfeat_list[i])
+                direct_match_count += 1
+            else:
+                break  # Stop at first mismatch
+        
+        # Step 2: Separate remaining TSV into cannot-match and can-match
+        remaining_tsv = tsv_run_names[direct_match_count:]
+        cannot_match = [t for t in remaining_tsv if t not in unfeat_set]
+        can_match = [t for t in remaining_tsv if t in unfeat_set]
+        
+        # Step 3: Get remaining unfeat
+        remaining_unfeat = [u for u in unfeat_list if u not in used_unfeat]
+        
+        # Step 4: Pair cannot-match first, then can-match
+        all_remaining_tsv = cannot_match + can_match
+        for tsv_run, unfeat_run in zip(all_remaining_tsv, remaining_unfeat):
+            paired_runs.append((tsv_run, unfeat_run))
+        
+        return paired_runs
 
     # ── Bilateral ROI mask loading (replication mode) ─────────────────────────
 

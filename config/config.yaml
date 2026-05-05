@@ -132,3 +132,7 @@ visualization:
 # ── Output ────────────────────────────────────────────────────
 output:
   parent_dir: "/home/tomerd/Documents/projects/MSc/lab/thesis_practice/relational_alignment/poc_output"
+  # subject_rdm_dir: "/path/to/custom/subject_rdms"
+  # Optional override for the per-subject RDM archive directory written by
+  # --dump-subject-rdms and read by --from-subject-rdms.
+  # Default: <output.parent_dir>/checkpoints/subject_rdms/
