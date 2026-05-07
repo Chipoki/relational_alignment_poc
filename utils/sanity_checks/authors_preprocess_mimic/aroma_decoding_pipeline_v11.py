@@ -142,13 +142,12 @@ def extract_aroma_run(ses, run_num, bold_path, events_path, roi_in_brain_mask, v
     ts = bold_img.get_fdata(dtype=np.float32)[roi_in_brain_mask].T
 
     # Step 1: Detrend the whole run before slicing
-    # TODO - supposed to happen already in the preprocessing pipeline, no?
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
         ts_detrended = clean_signal(ts, t_r=0.85, detrend=True, standardize=False)
 
     events = pd.read_csv(events_path, sep="\t" if events_path.endswith(".tsv") else ",")
-    events = events.dropna(subset=["targets"])
+    events = events.dropna()
     vi_events = events[events["volume_interest"] == 1].copy()
 
     if vi_events.empty:
@@ -265,8 +264,8 @@ def parse_args():
         ),
     )
     parser.add_argument("--out-dir",   default="./../../../poc_output/decoding")
-    parser.add_argument("--sessions",  nargs="+", type=int, default=[2, 3, 4, 5, 6, 7])
-    parser.add_argument("--C-values",  nargs="+", type=float, default=[1.0, 10.0])
+    parser.add_argument("--sessions",  nargs="+", type=int, default=[1, 2, 3, 4, 5, 6])
+    parser.add_argument("--C-values",  nargs="+", type=float, default=[1.0])
     parser.add_argument("--n-jobs",    type=int, default=1)
     parser.add_argument("--no-cache",  action="store_true")
     return parser.parse_args()

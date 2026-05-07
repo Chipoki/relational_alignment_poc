@@ -388,7 +388,6 @@ class SubjectBuilder:
                                subject_id, ses, run_idx, exc)
                 continue
 
-            tsv_df = tsv_df.dropna(subset=["targets"])
             vi_df = tsv_df[tsv_df["volume_interest"] == 1].copy()
             if vi_df.empty:
                 continue

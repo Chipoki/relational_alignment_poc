@@ -55,8 +55,8 @@ class BehavioralLoader:
         if not path.exists():
             raise FileNotFoundError(f"Events TSV not found: {path}")
         df = pd.read_csv(path, sep="\t")
-        # Drop rows without a target label (empty / fixation rows)
-        df = df.dropna(subset=["targets"]).reset_index(drop=True)
+        # Drop damaged entries (n.a. of RT_response or target columns, but potentially other corrupted rows)
+        df = df.dropna()
         return self._clean(df)
 
     def load_visibility_state(
