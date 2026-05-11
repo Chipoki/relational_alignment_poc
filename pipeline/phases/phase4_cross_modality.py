@@ -32,6 +32,7 @@ from analysis.rsa.rsa_analyzer import RSAAnalyzer
 from analysis.rsa.noise_ceiling import NoiseCeiling
 from analysis.gromov_wasserstein.gw_aligner import GromovWassersteinAligner
 from utils.io_utils import save_json
+from analysis.rsa.rdm import RDMBuilder
 
 logger = logging.getLogger(__name__)
 
@@ -97,22 +98,40 @@ def run(
             if not human:
                 continue
 
-            rsa_results = rsa_analyzer.cross_modality_rsa(human, fcnn_rdm)
+            # CRITICAL FIX: Align FCNN RDM to exactly match human stimuli before RSA
+            ref_human = human[0]
+            stim_to_idx = {s: i for i, s in enumerate(fcnn_rdm.stimulus_names.tolist())}
+            idx = [stim_to_idx[s] for s in ref_human.stimulus_names.tolist() if s in stim_to_idx]
+
+            if len(idx) != ref_human.n_stimuli:
+                logger.warning(
+                    "FCNN RDM missing stimuli present in Human RDM. Skipping alignment %s for %s",
+                    label, roi
+                )
+                continue
+
+            aligned_fcnn_matrix = fcnn_rdm.matrix[np.ix_(idx, idx)]
+            aligned_fcnn_rdm = RDMBuilder().build_from_matrix(
+                matrix=aligned_fcnn_matrix,
+                stimulus_names=ref_human.stimulus_names,
+                labels=ref_human.labels,
+                roi_or_layer=fcnn_rdm.roi_or_layer,
+                subject_id=fcnn_rdm.subject_id,
+                state=fcnn_rdm.state,
+            )
+
+            rsa_results = rsa_analyzer.cross_modality_rsa(human, aligned_fcnn_rdm)
             mean_rho    = rsa_analyzer.mean_rho(rsa_results)
 
-            # Try to re-use the Phase 3 human×human GW cache (cu pkl contains
-            # conscious + unconscious subjects which is a superset of what we
-            # need per alignment pair).  Fall back to a fresh solve if not found.
             cache_key   = "cc" if human_state == "conscious" else "uu"
             cached_gw   = _load_gw_cache(gw_cache / f"phase3_gw_{roi}_{cache_key}.pkl")
 
             if cached_gw is not None:
-                # Extend the cached human-only matrix with the FCNN column/row
-                all_rdms  = human + [fcnn_rdm]
+                all_rdms  = human + [aligned_fcnn_rdm]
                 ids       = [f"{r.subject_id}_{r.state}" for r in all_rdms]
                 gw_matrix = gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
             else:
-                all_rdms  = human + [fcnn_rdm]
+                all_rdms  = human + [aligned_fcnn_rdm]
                 ids       = [f"{r.subject_id}_{r.state}" for r in all_rdms]
                 gw_matrix = gw_aligner.build_pairwise_distance_matrix(all_rdms, ids)
 
@@ -171,7 +190,6 @@ def run(
             rho_matrix = np.full((n, n), np.nan)
             p_matrix   = np.full((n, n), np.nan)
 
-            # Vectorise each aggregate RDM upper triangle once
             vecs = [
                 _upper_tri(roi_dict[roi].matrix) for roi in rois_available
             ]
