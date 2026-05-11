@@ -120,6 +120,9 @@ class Settings:
         self.fcnn               = raw.get("fcnn", {})
         self.rdm                = raw.get("rdm",  {})
         self.rsa                = raw.get("rsa",  {})
+        self.aggregate_exclude_subjects: List[str] = [
+            str(s) for s in self.rsa.get("aggregate_exclude_subjects", [])
+        ]
         self.gromov_wasserstein = raw.get("gromov_wasserstein", {})
 
         # ── output ───────────────────────────────────────────────────────────
@@ -309,6 +312,37 @@ class Settings:
         if custom:
             return Path(custom)
         return self.checkpoints_dir / "subject_rdms"
+
+    @property
+    def intersected_rdm_dir(self) -> Path:
+        """
+        Directory that holds per-subject RDM archives subsetted to the
+        global cross-subject stimulus intersection, plus intersected
+        aggregate RDMs.  Used as the canonical input for phases 3-6 when
+        running in per-subject (replication) mode.
+
+        Default: ``<checkpoints_dir>/subject_rdms_intersected/``
+        Override via ``output.intersected_rdm_dir`` in config.yaml.
+        """
+        raw = load_raw_config()
+        custom = raw.get("output", {}).get("intersected_rdm_dir", None)
+        if custom:
+            return Path(custom)
+        return self.checkpoints_dir / "subject_rdms_intersected"
+
+    def subject_phase1_complete(self, subject_id: str) -> bool:
+        """
+        Return True if all Stage-A (per-subject) outputs already exist on disk
+        for *subject_id*, meaning the fMRI loading + phases 0-2 can be skipped.
+
+        Checks for:
+          - per-subject RDM archive  (<subject_rdm_dir>/<sid>.npz)
+          - SVM checkpoint           (<checkpoints_dir>/svm/phase0b_svm_results_<sid>.pkl)
+        """
+        from pathlib import Path as _Path
+        rdm_ok = (self.subject_rdm_dir / f"{subject_id}.npz").exists()
+        svm_ok = (self.checkpoints_dir / "svm" / f"phase0b_svm_results_{subject_id}.pkl").exists()
+        return rdm_ok and svm_ok
 
     def ensure_output_dirs(self) -> None:
         for d in [

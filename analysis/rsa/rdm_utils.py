@@ -102,45 +102,105 @@ def gw_consensus_matrix(
     (n, n) numpy array  – the GW Fréchet mean dissimilarity matrix,
     normalised to [0, 1] and with zero diagonal.
     """
+    import logging
     import ot  # Python Optimal Transport (already in environment.yml)
 
+    _log = logging.getLogger(__name__)
     n = rdms[0].matrix.shape[0]
     N = len(rdms)
 
-    # Normalise each subject matrix to [0,1] (required by POT)
-    Cs = [
-        (m := r.matrix.astype(np.float64)) / (m.max() + 1e-8)
-        for r in rdms
-    ]
-    # Uniform distributions over stimuli
-    ps = [np.ones(n) / n for _ in range(N)]
-    weights = np.ones(N) / N            # equal weight per subject
-    C_init  = np.mean(Cs, axis=0)       # warm-start from arithmetic mean
+    def _sanitise(mat: np.ndarray) -> np.ndarray | None:
+        """
+        Return a clean, normalised copy of *mat* suitable for POT, or None
+        if the matrix is too degenerate to use.
+
+        Real RDMs (1 − Spearman ρ) can contain:
+          - NaNs  (degenerate trials / stimuli with a single repetition)
+          - small negative values from floating-point error
+          - zero rows/columns (stimulus never co-occurring with others)
+        Any of these cause POT's internal barycenter update to produce NaN
+        transport plans, which then triggers the 'numpy.ndarray has no
+        attribute append' crash when POT tries to log convergence info on
+        the NaN array.
+        """
+        m = mat.astype(np.float64)
+        # Replace NaNs with column means, then with 0 if whole column is NaN
+        col_means = np.nanmean(m, axis=0)
+        col_means = np.where(np.isnan(col_means), 0.0, col_means)
+        nan_mask  = np.isnan(m)
+        m[nan_mask] = np.take(col_means, np.where(nan_mask)[1])
+        # Ensure symmetry (numerical drift can break this)
+        m = (m + m.T) / 2.0
+        # Clip negatives introduced by floating-point error
+        np.clip(m, 0.0, None, out=m)
+        np.fill_diagonal(m, 0.0)
+        # Normalise to [0, 1]
+        mx = m.max()
+        if mx < 1e-8:
+            return None   # zero matrix — degenerate, skip this subject
+        m /= mx
+        # Guard: any remaining non-finite value → give up on this matrix
+        if not np.isfinite(m).all():
+            return None
+        return m
+
+    Cs_raw = [_sanitise(r.matrix) for r in rdms]
+    Cs     = [c for c in Cs_raw if c is not None]
+    n_dropped = N - len(Cs)
+    if n_dropped:
+        _log.warning(
+            "gw_consensus_matrix: dropped %d/%d degenerate subject RDM(s) "
+            "before calling POT.", n_dropped, N,
+        )
+    if len(Cs) < 2:
+        _log.warning(
+            "gw_consensus_matrix: fewer than 2 usable RDMs after sanitisation; "
+            "falling back to arithmetic mean."
+        )
+        safe = [c for c in Cs_raw if c is not None] or \
+               [np.zeros((n, n))]
+        bary = np.mean(safe, axis=0)
+        np.fill_diagonal(bary, 0.0)
+        return bary
+
+    n_use = Cs[0].shape[0]   # may differ from n if a subject was dropped mid-shape
+    N_use = len(Cs)
+
+    ps      = [np.ones(n_use) / n_use for _ in range(N_use)]
+    weights = [1.0 / N_use] * N_use
+    C_init  = np.mean(Cs, axis=0)
+
+    gw_kwargs: dict = dict(
+        N=n_use,
+        Cs=Cs,
+        ps=ps,
+        p=np.ones(n_use) / n_use,
+        lambdas=weights,
+        loss_fun=loss_fun,
+        max_iter=max_iter,
+        tol=tol,
+        verbose=False,
+    )
+    try:
+        import inspect as _inspect
+        if "init_C" in _inspect.signature(ot.gromov.gromov_barycenters).parameters:
+            gw_kwargs["init_C"] = C_init
+    except Exception:
+        pass
 
     try:
-        C_bary = ot.gromov.gromov_barycenters(
-            N=n,
-            Cs=Cs,
-            ps=ps,
-            p=np.ones(n) / n,
-            lambdas=weights,
-            loss_fun=loss_fun,
-            max_iter=max_iter,
-            tol=tol,
-            init_C=C_init,
-            verbose=False,
-        )
-    except Exception as exc:  # noqa: BLE001  – fallback to arithmetic mean
-        import logging
-        logging.getLogger(__name__).warning(
+        C_bary = ot.gromov.gromov_barycenters(**gw_kwargs)
+        bary   = np.array(C_bary, dtype=np.float64)
+        if not np.isfinite(bary).all():
+            raise ValueError("POT returned non-finite barycenter matrix.")
+    except Exception as exc:
+        _log.warning(
             "gw_consensus_matrix: POT barycenter failed (%s); "
-            "falling back to arithmetic mean.", exc
+            "falling back to arithmetic mean.", exc,
         )
-        C_bary = C_init
+        bary = C_init
 
-    bary = np.array(C_bary, dtype=np.float64)
     np.fill_diagonal(bary, 0.0)
-    # Re-normalise to [0,1]
     mx = bary.max()
     if mx > 1e-8:
         bary /= mx

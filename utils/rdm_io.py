@@ -298,6 +298,91 @@ def load_fcnn_rdms(rdm_dump_dir: Path) -> Dict[str, Dict[str, RDM]]:
     return result
 
 
+# ── intersected-stimulus RDM helpers ─────────────────────────────────────────
+#
+# These mirror the per-subject + aggregate helpers above but target a separate
+# directory (<checkpoints_dir>/subject_rdms_intersected/) that stores RDMs
+# already subsetted to the global cross-subject stimulus intersection.
+# Phases 3-6 always read from this directory when running in per-subject mode.
+
+def intersected_rdm_path(intersected_dir: Path, subject_id: str) -> Path:
+    """Return the canonical path for one subject's intersected RDM archive."""
+    return intersected_dir / f"{subject_id}.npz"
+
+
+def dump_intersected_subject_rdms(
+    subject_id: str,
+    state_rdms: Dict[str, Dict[str, RDM]],
+    intersected_dir: Path,
+) -> Path:
+    """
+    Serialise one subject's stimulus-intersection-aligned RDMs.
+
+    Identical format to dump_subject_rdms(); stored in a separate directory
+    so the original (per-subject-only) archives are preserved.
+    """
+    intersected_dir.mkdir(parents=True, exist_ok=True)
+    out_path = intersected_rdm_path(intersected_dir, subject_id)
+    payload: dict = {}
+    for state, roi_dict in state_rdms.items():
+        for roi, rdm in roi_dict.items():
+            payload.update(_encode_rdm(rdm, state, roi))
+    np.savez_compressed(str(out_path), **payload)
+    logger.info(
+        "Dumped intersected RDMs for %s → %s  (%d state×roi pairs)",
+        subject_id, out_path,
+        sum(len(rois) for rois in state_rdms.values()),
+    )
+    return out_path
+
+
+def load_intersected_subject_rdms(
+    subject_id: str,
+    intersected_dir: Path,
+) -> Dict[str, Dict[str, RDM]]:
+    """
+    Load one subject's intersected RDMs.  Returns {state: {roi: RDM}}.
+    Raises FileNotFoundError if the archive does not exist.
+    """
+    path = intersected_rdm_path(intersected_dir, subject_id)
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Intersected RDM archive not found for {subject_id}: {path}"
+        )
+    with np.load(str(path), allow_pickle=False) as npz:
+        result = _decode_rdms(npz)
+    logger.info(
+        "Loaded intersected RDMs for %s from %s  (%d states)",
+        subject_id, path, len(result),
+    )
+    return result
+
+
+def list_intersected_subjects(intersected_dir: Path) -> list[str]:
+    """Return sorted list of subject IDs with intersected RDM archives on disk."""
+    if not intersected_dir.exists():
+        return []
+    return sorted(
+        p.stem for p in intersected_dir.glob("*.npz")
+        if not p.stem.startswith("_")
+    )
+
+
+def dump_intersected_aggregate_rdms(
+    agg_rdms: Dict[str, Dict[str, Dict[str, RDM]]],
+    intersected_dir: Path,
+) -> None:
+    """Serialise intersected aggregate RDMs (mean/median) to the intersected dir."""
+    dump_aggregate_rdms(agg_rdms, intersected_dir)
+
+
+def load_intersected_aggregate_rdms(
+    intersected_dir: Path,
+) -> Dict[str, Dict[str, Dict[str, RDM]]]:
+    """Load intersected aggregate RDMs from the intersected dir."""
+    return load_aggregate_rdms(intersected_dir)
+
+
 # ── SVM pattern dump (for per-subject SVM runs) ───────────────────────────────
 
 def _svm_patterns_path(rdm_dump_dir: Path, subject_id: str) -> Path:

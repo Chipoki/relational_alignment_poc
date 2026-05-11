@@ -109,12 +109,25 @@ def main() -> None:
 
     pipeline = POCPipeline(settings)
 
-    # ── Mode A: dump per-subject RDMs and exit ───────────────────────────────
+    # ── Replication mode: fully automatic per-subject iteration ─────────────
+    # When data_source == "replication" and neither legacy flag is set,
+    # the pipeline iterates over each subject individually, then runs the
+    # downstream phases on the intersected archives.
+    if (
+        settings.data_source == "replication"
+        and not args.dump_subject_rdms
+        and not args.from_subject_rdms
+        and args.phase is None
+    ):
+        _run_replication_mode(pipeline, args, settings)
+        return
+
+    # ── Mode A: dump per-subject RDMs and exit (legacy, still works) ────────
     if args.dump_subject_rdms:
         _run_dump_mode(pipeline, args, settings)
         return
 
-    # ── Mode B: load from disk and run downstream phases ────────────────────
+    # ── Mode B: load from disk and run downstream phases (legacy) ───────────
     if args.from_subject_rdms:
         _run_from_disk_mode(pipeline, args, settings)
         return
@@ -140,6 +153,95 @@ def main() -> None:
 
 
 # ── helpers ───────────────────────────────────────────────────────────────────
+
+def _run_replication_mode(
+    pipeline: "POCPipeline",
+    args: argparse.Namespace,
+    settings: Settings,
+) -> None:
+    """
+    Fully automatic replication-mode pipeline.
+
+    Part 1 – per-subject loop
+    -------------------------
+    For each subject (in order):
+      * Skip fMRI loading entirely if all Stage-A outputs already exist on
+        disk (per-subject RDM archive + SVM checkpoint).
+      * Otherwise: load BOLD, run phases 0-2 (fine-tune, embeddings, RDMs,
+        SVM), dump all outputs, then free RAM before the next subject.
+      * After each subject's dump: update aggregate figures AND intersected
+        figures/caches so they always reflect every subject processed so far.
+
+    Part 2 – cohort-level downstream
+    ---------------------------------
+    After every subject has been processed, load the intersected RDMs and
+    run phases 3-6 on the globally-consistent stimulus space.
+    """
+    log = logging.getLogger(__name__)
+    subject_ids = args.subjects or settings.subject_ids
+
+    log.info(
+        "Replication mode: processing %d subject(s) sequentially: %s",
+        len(subject_ids), subject_ids,
+    )
+
+    # ── Part 1: per-subject loop ─────────────────────────────────────────────
+    for sid in subject_ids:
+        log.info("─" * 60)
+        log.info("Subject %s", sid)
+
+        if settings.subject_phase1_complete(sid):
+            log.info(
+                "  Stage-A outputs already on disk for %s – skipping fMRI load. "
+                "Running intersected update only.", sid,
+            )
+        else:
+            # Load one subject
+            pipeline.load_subjects([sid])
+
+            if not pipeline._subjects:
+                log.error("  Could not load subject %s – skipping.", sid)
+                pipeline.clear_subject_data()
+                continue
+
+            # Phase 0.1: FCNN fine-tune (idempotent)
+            pipeline.phase0_finetune_fcnn(args.stimulus_dir)
+
+            # Phase 1: embeddings (idempotent)
+            pipeline.phase1_extract_embeddings(args.stimulus_dir)
+
+            # Phase 2: build + dump RDMs (also calls _update_aggregate_figures
+            # and _update_intersected_figures internally)
+            pipeline.phase2_build_rdms()
+
+            # Phase 0.2: SVM decoding + dump
+            pipeline.phase0b_svm_decoding()
+
+            # Free RAM before next subject
+            pipeline.clear_subject_data()
+            import gc; gc.collect()
+
+        # Even when skipping fMRI load, re-run the intersected update so that
+        # re-running any single subject always produces updated group figures.
+        pipeline.phase2_update_intersected()
+
+    # ── Part 2: cohort-level downstream phases ───────────────────────────────
+    log.info("=" * 60)
+    log.info("All subjects processed – starting downstream phases (3-6)")
+    log.info("=" * 60)
+
+    pipeline.load_intersected_rdms_for_downstream(subject_ids=None)
+
+    pipeline.phase0b_svm_decoding_from_disk(subject_ids=None)
+    pipeline.phase3_inter_subject_rsa()
+    pipeline.phase4_cross_modality_alignment()
+    pipeline.phase5_structural_invariance()
+    pipeline.phase6_visualize()
+
+    log.info(
+        "Pipeline (replication mode) complete. Results saved to: %s",
+        settings.results_dir,
+    )
 
 def _run_dump_mode(
     pipeline: POCPipeline,

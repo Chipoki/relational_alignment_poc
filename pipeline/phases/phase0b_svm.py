@@ -92,11 +92,48 @@ def run(
 
     if ckpt.exists():
         logger.info(
-            "SVM checkpoint found at %s – Phase 0.2 skipped (loading cached results).",
+            "SVM checkpoint found at %s – SVM training skipped (loading cached results).",
             ckpt,
         )
         with open(ckpt, "rb") as fh:
-            return pickle.load(fh)
+            all_results = pickle.load(fh)
+
+        # Even though training is skipped, still emit any missing per-subject
+        # figures (a) and regenerate group-level figures (b) so that a first
+        # run with the new code back-fills everything correctly.
+        plotter   = SVMPlotter(settings)
+        roi_names = [roi for roi in settings.active_roi_names if roi != "wholebrain"]
+
+        for sid, state_dict in all_results.items():
+            for state in ("conscious", "unconscious"):
+                fig_path = (
+                    plotter._out_dir("phase0b_svm")
+                    / f"phase0b_svm_{sid}_{state}.png"
+                )
+                if not fig_path.exists():
+                    plotter.plot_decoding_by_roi(
+                        results=state_dict.get(state, []) + state_dict.get("c_to_u", []),
+                        state=state,
+                        roi_names=roi_names,
+                        subject_id=sid,
+                        save_name=f"phase0b_svm_{sid}_{state}.png",
+                    )
+            if state_dict.get("c_to_u"):
+                fig_path = (
+                    plotter._out_dir("phase0b_svm")
+                    / f"phase0b_svm_{sid}_c_to_u.png"
+                )
+                if not fig_path.exists():
+                    plotter.plot_decoding_by_roi(
+                        results=state_dict["c_to_u"],
+                        state="c_to_u",
+                        roi_names=roi_names,
+                        subject_id=sid,
+                        save_name=f"phase0b_svm_{sid}_c_to_u.png",
+                    )
+
+        _update_group_figures(settings, all_results, plotter, roi_names)
+        return all_results
 
     # ── Build SVMDecoder with v11-matching hyperparameters ─────────────────
     rsa_cfg = settings.rsa  # dict from config.yaml rsa: section
@@ -196,6 +233,7 @@ def run(
             )
 
         # ── Per-subject figures ─────────────────────────────────────────────
+        # (a) conscious and unconscious bar charts (existing behaviour)
         for state in ("conscious", "unconscious"):
             plotter.plot_decoding_by_roi(
                 results=all_results[sid][state] + all_results[sid].get("c_to_u", []),
@@ -204,24 +242,43 @@ def run(
                 subject_id=sid,
                 save_name=f"phase0b_svm_{sid}_{state}.png",
             )
+        # (a) c_to_u bar chart per subject
+        if all_results[sid].get("c_to_u"):
+            plotter.plot_decoding_by_roi(
+                results=all_results[sid]["c_to_u"],
+                state="c_to_u",
+                roi_names=roi_names,
+                subject_id=sid,
+                save_name=f"phase0b_svm_{sid}_c_to_u.png",
+            )
+
+        # (b) After each subject: aggregate ALL cached per-subject checkpoints
+        # and regenerate group-level figures so they always reflect all data
+        # accumulated up to and including this subject.
+        _update_group_figures(settings, all_results, plotter, roi_names)
 
     # ── Cross-subject generalisation heatmap ──────────────────────────────
+    excluded = set(settings.aggregate_exclude_subjects)
+    included = sorted(sid for sid in all_results if sid not in excluded)
     gen_by_subject = {
         sid: all_results[sid]["c_to_u"]
-        for sid in all_results
+        for sid in included
         if all_results[sid]["c_to_u"]
     }
     if gen_by_subject:
         plotter.plot_generalisation_heatmap(
             results_by_subject=gen_by_subject,
             roi_names=roi_names,
+            included_subjects=included,
         )
         logger.info("Saved generalisation heatmap.")
 
     # ── Group summary ─────────────────────────────────────────────────────
+    included_results = {sid: all_results[sid] for sid in included}
     plotter.plot_group_summary(
-        all_results=all_results,
+        all_results=included_results,
         roi_names=roi_names,
+        included_subjects=included,
     )
     logger.info("Saved group summary bar chart.")
 
@@ -254,6 +311,122 @@ def run(
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
+
+def _update_group_figures(
+    settings: Settings,
+    current_results: dict,
+    plotter: "SVMPlotter",
+    roi_names: list[str],
+) -> None:
+    """
+    (b) Load ALL existing per-subject SVM checkpoints, merge them with
+    current_results (in-memory results for the subject just processed), and
+    regenerate the group summary bar chart and generalisation heatmap so
+    that both figures always reflect every subject cached so far.
+
+    Per-subject summary figures (conscious / unconscious / c_to_u) for
+    subjects whose checkpoint already existed but whose individual figures
+    are missing are also emitted here, so a first-time aggregation pass
+    will back-fill them.
+    """
+    ckpt_dir = settings.checkpoints_dir / _CHECKPOINT_SUBDIR
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect all single-subject checkpoint files
+    # (pattern: phase0b_svm_results_<subject_id>.pkl)
+    all_results: dict = dict(current_results)  # start from in-memory results
+
+    for pkl_path in sorted(ckpt_dir.glob("phase0b_svm_results_*.pkl")):
+        # Extract subject id(s) from filename; skip multi-subject or disk-load files
+        stem = pkl_path.stem  # e.g. phase0b_svm_results_sub-01
+        after_prefix = stem[len("phase0b_svm_results_"):]
+        # Skip files that contain multiple subjects (contain multiple sub- tokens)
+        # or disk-load aggregates (start with "from_disk")
+        if after_prefix.startswith("from_disk"):
+            continue
+        sid = after_prefix  # single subject id, e.g. "sub-01"
+        if sid in all_results:
+            # already have in-memory (freshly computed) version; prefer it
+            continue
+        try:
+            with open(pkl_path, "rb") as fh:
+                subj_data = pickle.load(fh)
+            # Each per-subject pkl stores {subject_id: {state: [SVMResult]}}
+            # OR directly {state: [SVMResult]} depending on how it was written.
+            # The per-subject checkpoint written by _checkpoint_path(settings, [subj])
+            # pickles all_results (which is keyed by sid), so unpack accordingly.
+            if isinstance(subj_data, dict):
+                if sid in subj_data:
+                    all_results[sid] = subj_data[sid]
+                else:
+                    # Might be the full all_results dict from an old run
+                    for k, v in subj_data.items():
+                        if k not in all_results:
+                            all_results[k] = v
+        except Exception as exc:
+            logger.warning("Could not load SVM checkpoint %s: %s", pkl_path, exc)
+
+    if not all_results:
+        return
+
+    # Apply exclusion list from settings
+    excluded = set(settings.aggregate_exclude_subjects)
+    included = sorted(sid for sid in all_results if sid not in excluded)
+
+    # Back-fill any missing per-subject figures (conscious / unconscious / c_to_u)
+    # — done for ALL subjects regardless of exclusion (individual figures unaffected)
+    for sid, state_dict in all_results.items():
+        for state in ("conscious", "unconscious"):
+            fig_path = (
+                plotter._out_dir("phase0b_svm")
+                / f"phase0b_svm_{sid}_{state}.png"
+            )
+            if not fig_path.exists():
+                plotter.plot_decoding_by_roi(
+                    results=state_dict.get(state, []) + state_dict.get("c_to_u", []),
+                    state=state,
+                    roi_names=roi_names,
+                    subject_id=sid,
+                    save_name=f"phase0b_svm_{sid}_{state}.png",
+                )
+        c_to_u = state_dict.get("c_to_u", [])
+        if c_to_u:
+            fig_path = (
+                plotter._out_dir("phase0b_svm")
+                / f"phase0b_svm_{sid}_c_to_u.png"
+            )
+            if not fig_path.exists():
+                plotter.plot_decoding_by_roi(
+                    results=c_to_u,
+                    state="c_to_u",
+                    roi_names=roi_names,
+                    subject_id=sid,
+                    save_name=f"phase0b_svm_{sid}_c_to_u.png",
+                )
+
+    # Regenerate (overwrite) group-level figures using included subjects only
+    included_results = {sid: all_results[sid] for sid in included}
+    gen_by_subject = {
+        sid: included_results[sid]["c_to_u"]
+        for sid in included_results
+        if included_results[sid].get("c_to_u")
+    }
+    if gen_by_subject:
+        plotter.plot_generalisation_heatmap(
+            results_by_subject=gen_by_subject,
+            roi_names=roi_names,
+            included_subjects=included,
+        )
+    plotter.plot_group_summary(
+        all_results=included_results,
+        roi_names=roi_names,
+        included_subjects=included,
+    )
+    logger.info(
+        "Updated group figures using %d subject(s): %s",
+        len(included), included,
+    )
+
 
 def _try_dump_svm_patterns(
     subject_id: str,
@@ -435,17 +608,35 @@ def run_from_disk(
                 subject_id=sid,
                 save_name=f"phase0b_svm_{sid}_{state}.png",
             )
+        # (a) c_to_u bar chart per subject
+        if all_results[sid].get("c_to_u"):
+            plotter.plot_decoding_by_roi(
+                results=all_results[sid]["c_to_u"],
+                state="c_to_u",
+                roi_names=roi_names,
+                subject_id=sid,
+                save_name=f"phase0b_svm_{sid}_c_to_u.png",
+            )
+        # (b) Aggregate all cached checkpoints and regenerate group figures
+        _update_group_figures(settings, all_results, plotter, roi_names)
 
     # Group figures + stats (same as run())
+    excluded = set(settings.aggregate_exclude_subjects)
+    included = sorted(sid for sid in all_results if sid not in excluded)
+    included_results = {sid: all_results[sid] for sid in included}
     gen_by_subject = {
-        sid: all_results[sid]["c_to_u"]
-        for sid in all_results if all_results[sid]["c_to_u"]
+        sid: included_results[sid]["c_to_u"]
+        for sid in included_results if included_results[sid]["c_to_u"]
     }
     if gen_by_subject:
         plotter.plot_generalisation_heatmap(
             results_by_subject=gen_by_subject, roi_names=roi_names,
+            included_subjects=included,
         )
-    plotter.plot_group_summary(all_results=all_results, roi_names=roi_names)
+    plotter.plot_group_summary(
+        all_results=included_results, roi_names=roi_names,
+        included_subjects=included,
+    )
 
     json_out: dict = {}
     for sid, state_dict in all_results.items():

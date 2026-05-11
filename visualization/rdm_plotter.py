@@ -115,6 +115,7 @@ class RDMPlotter:
         save_name: str | None = None,
         subdir: str | None = None,
         show: bool = False,
+        included_subjects: list[str] | None = None,
     ) -> plt.Figure:
         """
         Plot a cross-subject aggregate RDM (mean or median).
@@ -159,6 +160,8 @@ class RDMPlotter:
         )
         sorted_labels = rdm.labels[sort_idx]
         self._draw_animacy_sidebar(ax, sorted_labels, side="right")
+        if included_subjects is not None:
+            _annotate_included_subjects(fig, included_subjects)
         plt.tight_layout()
 
         if save_name:
@@ -184,6 +187,7 @@ class RDMPlotter:
         best_score: float | None = None,
         k_min: int = 2,
         k_max: int = 8,
+        included_subjects: list[str] | None = None,
     ) -> plt.Figure:
         """
         Plot a cluster-sorted RDM with Ward/silhouette boundary lines.
@@ -247,6 +251,8 @@ class RDMPlotter:
         )
         sorted_labels = rdm.labels[order]
         self._draw_animacy_sidebar(ax, sorted_labels, side="right")
+        if included_subjects is not None:
+            _annotate_included_subjects(fig, included_subjects)
         plt.tight_layout()
 
         if save_name:
@@ -432,3 +438,13 @@ class RDMPlotter:
         sidebar_ax.set_xlabel("A/I", fontsize=6, labelpad=2)
 
 
+# ── Module-level helper ───────────────────────────────────────────────────────
+
+def _annotate_included_subjects(fig: "plt.Figure", subjects: list) -> None:
+    """Add a small footer to *fig* listing the subjects included in the analysis."""
+    label = "Included subjects: " + ", ".join(sorted(str(s) for s in subjects))
+    fig.text(
+        0.5, -0.02, label,
+        ha="center", va="top", fontsize=6.5, color="#444444",
+        wrap=True, transform=fig.transFigure,
+    )

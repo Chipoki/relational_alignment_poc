@@ -22,7 +22,13 @@ def run(
     logger.info("PHASE 6 – Relational Visualizations (Meta-MDS)")
     logger.info("=" * 60)
 
-    sid0   = subjects[0].subject_id if subjects else None
+    # In replication mode subjects list may be empty (cleared after per-subject
+    # loop); fall back to subject IDs available in human_rdms.
+    if not subjects:
+        fake_sids = [sid for sid in human_rdms if not str(sid).startswith("_")]
+        sid0 = fake_sids[0] if fake_sids else None
+    else:
+        sid0 = subjects[0].subject_id if subjects else None
     c_rois = list(human_rdms.get(sid0, {}).get("conscious", {}).keys()) if sid0 else []
 
     # Use active_roi_names to respect config order; fall back to whatever is

@@ -127,6 +127,87 @@ class POCPipeline:
         # Register the ROIs that actually exist in the loaded data
         self._subject_builder.register_rois_with_settings()
 
+    def clear_subject_data(self) -> None:
+        """
+        Release all per-subject in-memory data so the next subject can be
+        loaded without accumulating RAM from previous iterations.
+        Preserves shared components (embedders, plotters, analyzers).
+        """
+        self._subjects.clear()
+        self._human_rdms.clear()
+        self._fcnn_rdms.clear()
+
+    def phase2_update_intersected(self) -> None:
+        """
+        Recompute the global stimulus intersection across all accumulated
+        per-subject RDM archives and regenerate intersected figures + caches.
+        Called at the end of every per-subject iteration in replication mode.
+        """
+        phase2_rdms._update_intersected_figures(self._cfg, self._rdm_plotter)
+
+    def load_intersected_rdms_for_downstream(
+        self, subject_ids: list[str] | None = None
+    ) -> None:
+        """
+        Populate self._human_rdms and self._fcnn_rdms from the intersected
+        RDM archives so that phases 3-6 operate on the globally-consistent
+        stimulus space.
+
+        subject_ids: restrict to these subjects; defaults to all intersected
+                     subjects, minus any in aggregate_exclude_subjects.
+        """
+        from utils.rdm_io import (
+            list_intersected_subjects,
+            load_intersected_subject_rdms,
+            load_intersected_aggregate_rdms,
+            load_fcnn_rdms,
+        )
+
+        intersected_dir = self._cfg.intersected_rdm_dir
+        excluded        = set(self._cfg.aggregate_exclude_subjects)
+        available       = list_intersected_subjects(intersected_dir)
+        ids_to_load     = subject_ids or [s for s in available if s not in excluded]
+
+        human_rdms: dict = {}
+        discovered_rois: set[str] = set()
+
+        for sid in ids_to_load:
+            if sid in excluded:
+                continue
+            try:
+                state_rdms = load_intersected_subject_rdms(sid, intersected_dir)
+                human_rdms[sid] = state_rdms
+                for state_dict in state_rdms.values():
+                    discovered_rois.update(state_dict.keys())
+            except Exception as exc:
+                logger.error("Failed to load intersected RDMs for %s: %s", sid, exc)
+
+        if not human_rdms:
+            raise RuntimeError(
+                f"No intersected RDM archives found under {intersected_dir}.\n"
+                "Ensure at least one per-subject run has completed."
+            )
+
+        logger.info(
+            "Loaded intersected RDMs for %d subjects: %s",
+            len(human_rdms), sorted(human_rdms.keys()),
+        )
+        self._cfg.register_active_rois(sorted(discovered_rois))
+
+        agg_rdms = load_intersected_aggregate_rdms(intersected_dir)
+        if not agg_rdms:
+            agg_rdms = {m: {s: {} for s in ("conscious", "unconscious")}
+                        for m in ("mean", "median")}
+        human_rdms["_agg_rdms"]  = agg_rdms
+        human_rdms["_mean_rdms"] = agg_rdms.get("mean", {})
+
+        fcnn_rdms = load_fcnn_rdms(self._cfg.subject_rdm_dir)
+        if not fcnn_rdms:
+            logger.info("No FCNN RDMs found – cross-modality phases will be skipped.")
+
+        self._human_rdms = human_rdms
+        self._fcnn_rdms  = fcnn_rdms
+
     # ── Phase dispatch ───────────────────────────────────────────────────────
 
     def phase0_finetune_fcnn(self, stimulus_image_dir=None) -> None:

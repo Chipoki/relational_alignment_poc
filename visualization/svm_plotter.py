@@ -100,6 +100,7 @@ class SVMPlotter:
         roi_names: list[str],
         save_name: str = "phase0b_svm_generalisation_heatmap.png",
         subdir: str = "phase0b_svm",
+        included_subjects: list[str] | None = None,
     ) -> plt.Figure:
         """
         Subjects × ROI heatmap of delta-AUC (SVM − chance) for C→U transfer.
@@ -146,6 +147,7 @@ class SVMPlotter:
             "ΔAUC  (hatching = non-significant after Bonferroni)",
             fontsize=9,
         )
+        _annotate_included_subjects(fig, included_subjects or sorted(results_by_subject.keys()))
         plt.tight_layout()
         fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi,
                     bbox_inches="tight")
@@ -161,6 +163,7 @@ class SVMPlotter:
         states: tuple[str, ...] = ("conscious", "unconscious", "c_to_u"),
         save_name: str = "phase0b_svm_group_summary.png",
         subdir: str = "phase0b_svm",
+        included_subjects: list[str] | None = None,
     ) -> plt.Figure:
         """
         Group-level mean AUC (±SEM across subjects) per ROI and state.
@@ -207,6 +210,7 @@ class SVMPlotter:
         ax.set_ylim(0.35, 1.0)
         ax.set_title("Group SVM Decoding Summary  ·  All ROIs", fontsize=10)
         ax.legend(fontsize=8, loc="upper right")
+        _annotate_included_subjects(fig, included_subjects or sorted(all_results.keys()))
         plt.tight_layout()
         fig.savefig(self._out_dir(subdir) / save_name, dpi=self._dpi,
                     bbox_inches="tight")
@@ -217,3 +221,15 @@ class SVMPlotter:
     def _rng_jitter(n: int, scale: float = 0.18) -> np.ndarray:
         rng = np.random.default_rng(0)
         return rng.uniform(-scale / 2, scale / 2, n)
+
+
+# ── Module-level helper ───────────────────────────────────────────────────────
+
+def _annotate_included_subjects(fig: "plt.Figure", subjects: list[str]) -> None:
+    """Add a small footer to *fig* listing the subjects included in the analysis."""
+    label = "Included subjects: " + ", ".join(sorted(subjects))
+    fig.text(
+        0.5, -0.02, label,
+        ha="center", va="top", fontsize=6.5, color="#444444",
+        wrap=True, transform=fig.transFigure,
+    )

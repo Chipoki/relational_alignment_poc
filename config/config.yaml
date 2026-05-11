@@ -115,6 +115,12 @@ rsa:
   svm_max_iter: 10000
   svm_random_state: 12345   # matches v11 random_state
 
+  # Subjects to exclude from ALL aggregative / group-level figures
+  # (generalisation heatmap, group summary, mean/median/consensus RDMs).
+  # Individual per-subject figures are NOT affected.
+  # Example: aggregate_exclude_subjects: ["sub-03", "sub-07"]
+  aggregate_exclude_subjects: ["sub-03"]
+
 # ── Gromov-Wasserstein (Phases 4 & 5) ─────────────────────────
 gromov_wasserstein:
   loss_fun: "square_loss"
